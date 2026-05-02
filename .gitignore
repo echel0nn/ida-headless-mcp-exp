@@ -25,3 +25,6 @@ smoke_output.json
 .probe-venv/
 cache/
 projects/
+.local-fixtures/
+.local-fixtures-exe/
+fixture_paths.txt
