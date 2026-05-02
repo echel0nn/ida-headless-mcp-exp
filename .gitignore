@@ -20,3 +20,8 @@ build/
 
 # Runtime
 *.log
+
+smoke_output.json
+.probe-venv/
+cache/
+projects/
