@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -7,6 +8,8 @@ __all__ = [
     "decompile_cfunc",
     "query_ctree_calls",
     "get_microcode_text",
+    "trace_ctree_dataflow",
+    "get_argument_names",
 ]
 
 
@@ -29,8 +32,14 @@ def decompile_cfunc(func: Any) -> Any:
     return ida_hexrays.decompile_func(func)
 
 
-class _CallCollector:  # subclassing ida class at runtime to avoid import at module load
-    pass
+def get_argument_names(cfunc: Any) -> list[str]:
+    out: list[str] = []
+    try:
+        for arg in cfunc.arguments:
+            out.append(str(arg.name))
+    except Exception:
+        pass
+    return out
 
 
 def query_ctree_calls(
@@ -67,9 +76,11 @@ def query_ctree_calls(
             args_preview = [_expr_preview(a, cfunc) for a in args]
             detail: str | None = None
             ok = True
+            guarded_by_if = any(getattr(parent, 'op', None) == ida_hexrays.cit_if for parent in self.parents)
 
             if target_fn:
-                if not callee_name or target_fn not in callee_name.lower():
+                candidate = (callee_name or callee_expr).lower()
+                if target_fn not in candidate:
                     ok = False
                     detail = f"callee {callee_name!r} does not match target_function"
 
@@ -99,6 +110,7 @@ def query_ctree_calls(
                     "callee_expr": callee_expr,
                     "arg_count": len(args),
                     "args_preview": args_preview,
+                    "guarded_by_if": guarded_by_if,
                     "matches_filters": ok,
                     "detail": detail,
                 }
@@ -129,7 +141,6 @@ def get_microcode_text(cfunc: Any, maturity: str = "current") -> dict[str, Any]:
         try:
             mba.set_maturity(mat)
         except Exception:
-            # Keep current maturity if set_maturity fails; report it in output.
             pass
 
     printer = ida_hexrays.qstring_printer_t(cfunc, False)
@@ -142,6 +153,110 @@ def get_microcode_text(cfunc: Any, maturity: str = "current") -> dict[str, Any]:
         "text": text,
         "line_count": len(text.splitlines()),
     }
+
+
+def trace_ctree_dataflow(
+    cfunc: Any,
+    *,
+    sink_function: str,
+    sink_argument_index: int,
+    source_contains: list[str] | None = None,
+    max_steps: int = 10,
+) -> dict[str, Any]:
+    sink = query_ctree_calls(cfunc, target_function=sink_function, argument_index=sink_argument_index, limit=1)
+    if not sink["matches"]:
+        return {
+            "entry_ea": f"0x{cfunc.entry_ea:x}",
+            "function_name": _function_name(cfunc),
+            "sink_found": False,
+            "sink_function": sink_function,
+            "sink_argument_index": sink_argument_index,
+            "chain": [],
+            "source_hit": False,
+            "source_term": None,
+        }
+
+    sink_match = sink["matches"][0]
+    target_expr = sink_match["args_preview"][sink_argument_index]
+    current_expr = _normalize_expr(target_expr)
+    assignments = _collect_assignments(cfunc)
+    src_terms = [s.lower() for s in (source_contains or []) if str(s).strip()]
+    chain: list[dict[str, Any]] = []
+    source_hit = any(term in current_expr.lower() for term in src_terms)
+    source_term = next((term for term in src_terms if term in current_expr.lower()), None)
+    seen_exprs: set[str] = set()
+
+    while not source_hit and current_expr and len(chain) < max_steps:
+        if current_expr in seen_exprs:
+            break
+        seen_exprs.add(current_expr)
+        match = None
+        for item in reversed(assignments):
+            if item["lhs_norm"] == current_expr:
+                match = item
+                break
+        if match is None:
+            break
+        chain.append({
+            "address": match["address"],
+            "lhs": match["lhs"],
+            "rhs": match["rhs"],
+        })
+        current_expr = match["rhs_norm"]
+        for term in src_terms:
+            if term in current_expr.lower():
+                source_hit = True
+                source_term = term
+                break
+
+    return {
+        "entry_ea": f"0x{cfunc.entry_ea:x}",
+        "function_name": _function_name(cfunc),
+        "sink_found": True,
+        "sink_function": sink_function,
+        "sink_argument_index": sink_argument_index,
+        "sink_expression": target_expr,
+        "chain": chain,
+        "source_hit": source_hit,
+        "source_term": source_term,
+        "truncated": len(chain) >= max_steps,
+    }
+
+
+def _collect_assignments(cfunc: Any) -> list[dict[str, Any]]:
+    import ida_hexrays
+
+    out: list[dict[str, Any]] = []
+    assign_ops = {
+        ida_hexrays.cot_asg,
+        ida_hexrays.cot_asgadd,
+        ida_hexrays.cot_asgsub,
+        ida_hexrays.cot_asgmul,
+        ida_hexrays.cot_asgband,
+        ida_hexrays.cot_asgbor,
+        ida_hexrays.cot_asgxor,
+    }
+
+    class Visitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self) -> None:
+            super().__init__(ida_hexrays.CV_FAST)
+
+        def visit_expr(self, expr):  # type: ignore[override]
+            if expr.op not in assign_ops:
+                return 0
+            lhs = _expr_preview(expr.x, cfunc)
+            rhs = _expr_preview(expr.y, cfunc)
+            out.append({
+                "address": f"0x{expr.ea:x}",
+                "lhs": lhs,
+                "rhs": rhs,
+                "lhs_norm": _normalize_expr(lhs),
+                "rhs_norm": _normalize_expr(rhs),
+            })
+            return 0
+
+    Visitor().apply_to_exprs(cfunc.body, None)
+    return out
 
 
 def _function_name(cfunc: Any) -> str:
@@ -189,6 +304,31 @@ def _expr_preview(expr: Any, cfunc: Any) -> str:
         return ida_lines.tag_remove(raw)
     except Exception:
         return raw
+
+
+def _normalize_expr(text: str) -> str:
+    s = text.strip()
+    # strip repeated leading C-style casts like (unsigned int)(size_t)
+    while True:
+        m = re.match(r"^\((?:unsigned\s+)?[\w\s:*]+\)\s*(.+)$", s)
+        if not m:
+            break
+        s = m.group(1).strip()
+    # strip one pair of outer parentheses when balanced
+    if s.startswith("(") and s.endswith(")"):
+        depth = 0
+        balanced = True
+        for i, ch in enumerate(s):
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0 and i != len(s) - 1:
+                    balanced = False
+                    break
+        if balanced and depth == 0:
+            s = s[1:-1].strip()
+    return re.sub(r"\s+", " ", s)
 
 
 def _op_name_to_const(name: str):

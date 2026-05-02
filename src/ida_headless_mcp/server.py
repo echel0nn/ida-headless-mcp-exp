@@ -236,6 +236,25 @@ def get_microcode(binary_id: str, address_or_name: str, maturity: str = "current
     """Return textual Hex-Rays microcode for a function at the requested maturity level."""
     return _manager().get_microcode(binary_id, address_or_name, maturity=maturity)
 
+@mcp.tool()
+def trace_dataflow(
+    binary_id: str,
+    address_or_name: str,
+    sink_function: str,
+    sink_argument_index: int,
+    source_contains: list[str] | None = None,
+    max_steps: int = 10,
+) -> dict:
+    """Trace a sink argument backward through local assignment hops to a source term."""
+    return _manager().trace_dataflow(
+        binary_id,
+        address_or_name,
+        sink_function=sink_function,
+        sink_argument_index=sink_argument_index,
+        source_contains=source_contains,
+        max_steps=max_steps,
+    )
+
 
 def create_server() -> FastMCP:
     return mcp

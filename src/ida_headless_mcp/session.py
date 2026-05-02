@@ -11,7 +11,13 @@ from .bootstrap import bootstrap_ida
 from .config import Settings
 from .diff import diff_binary_indexes, diff_function_payloads
 from .function_index import FunctionIndex, build_function_index
-from .hexrays_analysis import decompile_cfunc, get_microcode_text, query_ctree_calls
+from .hexrays_analysis import (
+    decompile_cfunc,
+    get_argument_names,
+    get_microcode_text,
+    query_ctree_calls,
+    trace_ctree_dataflow,
+ )
 
 __all__ = ["BinaryRecord", "IDABinarySessionManager"]
 
@@ -525,7 +531,7 @@ class IDABinarySessionManager:
         candidates = query["functions"]
         matches: list[dict[str, Any]] = []
         dangerous_names = {
-            "memcpy", "strcpy", "sprintf", "gets", "strcat",
+            "memcpy", "memmove", "strcpy", "sprintf", "gets", "strcat",
             "system", "popen", "execve", "execl", "execlp", "execvp", "winexec",
         }
         print_like = {"printf", "fprintf", "sprintf", "snprintf", "syslog", "vsnprintf"}
@@ -534,7 +540,8 @@ class IDABinarySessionManager:
         for item in candidates:
             if len(matches) >= limit:
                 break
-            callees = {c.lower() for c in item.get("callees", [])}
+            raw_callees = {c.lower() for c in item.get("callees", [])}
+            callees = set(raw_callees) | {c[2:] for c in raw_callees if c.startswith("j_")}
             decomp: dict[str, Any] | None = None
             match_detail: str | None = None
 
@@ -565,12 +572,51 @@ class IDABinarySessionManager:
             elif pattern == "unchecked_length":
                 hit = sorted(callees & dangerous_names)
                 if hit:
+                    import ida_funcs
+
+                    ea = _resolve_address(item["address"])
+                    func = ida_funcs.get_func(ea)
+                    if func is None:
+                        continue
+                    cfunc = decompile_cfunc(func)
+                    arg_names = get_argument_names(cfunc)
+                    source_terms = arg_names[:2] if arg_names else []
+                    sink_name = hit[0]
+                    flow = trace_ctree_dataflow(
+                        cfunc,
+                        sink_function=sink_name,
+                        sink_argument_index=2,
+                        source_contains=source_terms,
+                    )
+                    sink = query_ctree_calls(
+                        cfunc,
+                        target_function=sink_name,
+                        argument_index=2,
+                        limit=1,
+                    )
                     decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
-                    pseudo_lower = decomp["pseudocode"].lower()
-                    has_len_terms = any(t in pseudo_lower for t in ("length", "len", "size", "count"))
-                    has_validation = any(t in pseudo_lower for t in ("validate", "bounds", "check", "maximum", "max_"))
-                    if has_len_terms and not has_validation:
-                        match_detail = "size-like terms with dangerous sink and no obvious validation"
+                    pseudo = decomp["pseudocode"]
+                    pseudo_lower = pseudo.lower()
+                    sink_line_index = next(
+                        (i for i, line in enumerate(pseudo_lower.splitlines()) if sink_name.lower() + "(" in line),
+                        -1,
+                    )
+                    guarded_textually = False
+                    if sink_line_index >= 0:
+                        lines = pseudo_lower.splitlines()
+                        window = lines[max(0, sink_line_index - 3):sink_line_index]
+                        guarded_textually = any("if (" in line or "if(" in line for line in window)
+                    guarded_by_if = bool(sink["matches"] and sink["matches"][0].get("guarded_by_if"))
+                    has_validation = any(
+                        t in pseudo_lower for t in ("validate", "bounds", "check", "maximum", "max_")
+                    ) or guarded_by_if or guarded_textually
+                    if (flow["source_hit"] or flow["chain"]) and not has_validation:
+                        chain_len = len(flow["chain"])
+                        source = flow["source_term"] or "upstream expression"
+                        match_detail = (
+                            f"size sink traces back to {source} with {chain_len} "
+                            "assignment hop(s) and no obvious validation"
+                        )
 
             else:
                 raise ValueError(f"Unknown pattern_type: {pattern_type!r}")
@@ -586,6 +632,7 @@ class IDABinarySessionManager:
                 "callees": item.get("callees", []),
                 "string_refs": item.get("string_refs", [])[:10],
                 "decompile_preview": decomp["pseudocode"],
+                "trace_dataflow": flow if pattern == "unchecked_length" else None,
             })
 
         payload = {
@@ -706,6 +753,50 @@ class IDABinarySessionManager:
             "get_microcode",
             {"binary_id": binary_id, "target": address_or_name, "maturity": maturity},
             {"maturity": payload["maturity"], "line_count": payload["line_count"]},
+        )
+        return payload
+
+    def trace_dataflow(
+        self,
+        binary_id: str,
+        address_or_name: str,
+        *,
+        sink_function: str,
+        sink_argument_index: int,
+        source_contains: list[str] | None = None,
+        max_steps: int = 10,
+    ) -> dict[str, Any]:
+        self._activate(binary_id)
+        import ida_funcs
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        payload = trace_ctree_dataflow(
+            cfunc,
+            sink_function=sink_function,
+            sink_argument_index=sink_argument_index,
+            source_contains=source_contains,
+            max_steps=max_steps,
+        )
+        payload["binary_id"] = binary_id
+        self._write_request_log(
+            "trace_dataflow",
+            {
+                "binary_id": binary_id,
+                "target": address_or_name,
+                "sink_function": sink_function,
+                "sink_argument_index": sink_argument_index,
+                "source_contains": source_contains or [],
+                "max_steps": max_steps,
+            },
+            {
+                "sink_found": payload["sink_found"],
+                "source_hit": payload["source_hit"],
+                "chain_len": len(payload["chain"]),
+            }
         )
         return payload
 
