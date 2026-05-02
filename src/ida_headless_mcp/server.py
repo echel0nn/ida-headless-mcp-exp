@@ -209,6 +209,33 @@ def diff_function(
         max_lines=max_lines,
     )
 
+@mcp.tool()
+def query_ctree(
+    binary_id: str,
+    address_or_name: str,
+    target_function: str = "",
+    argument_index: int | None = None,
+    contains_operation: str = "",
+    operand_type_is: str = "",
+    limit: int = 50,
+) -> dict:
+    """Query the decompiler CTree for call expressions matching structural predicates."""
+    return _manager().query_ctree(
+        binary_id,
+        address_or_name,
+        target_function=target_function,
+        argument_index=argument_index,
+        contains_operation=contains_operation,
+        operand_type_is=operand_type_is,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def get_microcode(binary_id: str, address_or_name: str, maturity: str = "current") -> dict:
+    """Return textual Hex-Rays microcode for a function at the requested maturity level."""
+    return _manager().get_microcode(binary_id, address_or_name, maturity=maturity)
+
 
 def create_server() -> FastMCP:
     return mcp
