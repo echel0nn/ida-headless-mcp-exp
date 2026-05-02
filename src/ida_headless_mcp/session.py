@@ -11,6 +11,7 @@ from .bootstrap import bootstrap_ida
 from .config import Settings
 from .diff import diff_binary_indexes, diff_function_payloads
 from .function_index import FunctionIndex, build_function_index
+from .hexrays_analysis import decompile_cfunc, get_microcode_text, query_ctree_calls
 
 __all__ = ["BinaryRecord", "IDABinarySessionManager"]
 
@@ -638,6 +639,73 @@ class IDABinarySessionManager:
                 "address_or_name_new": address_or_name_new,
             },
             {"summary_signal": payload["summary_signal"]},
+        )
+        return payload
+
+    def query_ctree(
+        self,
+        binary_id: str,
+        address_or_name: str,
+        *,
+        target_function: str = "",
+        argument_index: int | None = None,
+        contains_operation: str = "",
+        operand_type_is: str = "",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        self._activate(binary_id)
+        import ida_funcs
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        payload = query_ctree_calls(
+            cfunc,
+            target_function=target_function,
+            argument_index=argument_index,
+            contains_operation=contains_operation,
+            operand_type_is=operand_type_is,
+            limit=limit,
+        )
+        payload["binary_id"] = binary_id
+        self._write_request_log(
+            "query_ctree",
+            {
+                "binary_id": binary_id,
+                "target": address_or_name,
+                "target_function": target_function,
+                "argument_index": argument_index,
+                "contains_operation": contains_operation,
+                "operand_type_is": operand_type_is,
+                "limit": limit,
+            },
+            {"returned": payload["returned"], "scanned_calls": payload["scanned_calls"]},
+        )
+        return payload
+
+    def get_microcode(
+        self,
+        binary_id: str,
+        address_or_name: str,
+        *,
+        maturity: str = "current",
+    ) -> dict[str, Any]:
+        self._activate(binary_id)
+        import ida_funcs
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        payload = get_microcode_text(cfunc, maturity=maturity)
+        payload["binary_id"] = binary_id
+        self._write_request_log(
+            "get_microcode",
+            {"binary_id": binary_id, "target": address_or_name, "maturity": maturity},
+            {"maturity": payload["maturity"], "line_count": payload["line_count"]},
         )
         return payload
 
