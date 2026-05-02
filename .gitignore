@@ -28,3 +28,5 @@ projects/
 .local-fixtures/
 .local-fixtures-exe/
 fixture_paths.txt
+
+.local-rule-fixtures/
