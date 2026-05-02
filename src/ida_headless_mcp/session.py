@@ -618,6 +618,35 @@ class IDABinarySessionManager:
                             "assignment hop(s) and no obvious validation"
                         )
 
+            elif pattern == "signed_size":
+                hit = sorted(callees & dangerous_names)
+                if hit:
+                    import ida_funcs
+
+                    ea = _resolve_address(item["address"])
+                    func = ida_funcs.get_func(ea)
+                    if func is None:
+                        continue
+                    cfunc = decompile_cfunc(func)
+                    sink_name = hit[0]
+                    sink = query_ctree_calls(
+                        cfunc,
+                        target_function=sink_name,
+                        argument_index=2,
+                        operand_type_is="signed",
+                        limit=3,
+                    )
+                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    pseudo_lower = decomp["pseudocode"].lower()
+                    has_validation = any(
+                        t in pseudo_lower for t in ("validate", "bounds", "check", "maximum", "max_", ">= 0", "< 0")
+                    )
+                    if sink["returned"] > 0 and not has_validation:
+                        signed_arg = sink["matches"][0]["args_preview"][2] if sink["matches"] else "<arg>"
+                        match_detail = (
+                            f"dangerous sink {sink_name} receives signed size expression "
+                            f"{signed_arg!r} with no obvious validation"
+                        )
             else:
                 raise ValueError(f"Unknown pattern_type: {pattern_type!r}")
 
