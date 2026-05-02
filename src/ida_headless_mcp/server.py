@@ -186,6 +186,29 @@ def search_pattern(
         max_lines=max_lines,
     )
 
+@mcp.tool()
+def diff_binary(binary_id_old: str, binary_id_new: str) -> dict:
+    """Diff two analyzed binaries structurally by function metadata."""
+    return _manager().diff_binary(binary_id_old, binary_id_new)
+
+
+@mcp.tool()
+def diff_function(
+    binary_id_old: str,
+    address_or_name_old: str,
+    binary_id_new: str,
+    address_or_name_new: str,
+    max_lines: int = 500,
+) -> dict:
+    """Diff two functions using side-by-side pseudocode and unified diff."""
+    return _manager().diff_function(
+        binary_id_old,
+        address_or_name_old,
+        binary_id_new,
+        address_or_name_new,
+        max_lines=max_lines,
+    )
+
 
 def create_server() -> FastMCP:
     return mcp

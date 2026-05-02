@@ -9,6 +9,7 @@ from typing import Any
 
 from .bootstrap import bootstrap_ida
 from .config import Settings
+from .diff import diff_binary_indexes, diff_function_payloads
 from .function_index import FunctionIndex, build_function_index
 
 __all__ = ["BinaryRecord", "IDABinarySessionManager"]
@@ -90,6 +91,10 @@ class IDABinarySessionManager:
             record.active = True
             self._write_request_log("open_binary", {"path": str(target)}, {"binary_id": binary_id, "cached": True})
             return record
+
+        if self._active_binary_id is not None:
+            self._ida.close_database(False)
+            self._records[self._active_binary_id].active = False
 
         self._open_database(target)
         record = self._collect_metadata(binary_id=binary_id, path=target, sha256=sha256, size_bytes=size_bytes)
@@ -592,6 +597,47 @@ class IDABinarySessionManager:
             "search_pattern",
             {"binary_id": binary_id, "pattern_type": pattern_type, "name_pattern": name_pattern, "limit": limit},
             {"count": len(matches)},
+        )
+        return payload
+
+    def diff_binary(self, binary_id_old: str, binary_id_new: str) -> dict[str, Any]:
+        self._activate(binary_id_old)
+        old_entries = self._indices[binary_id_old].entries
+        self._activate(binary_id_new)
+        new_entries = self._indices[binary_id_new].entries
+        payload = diff_binary_indexes(old_entries, new_entries)
+        payload.update({"binary_id_old": binary_id_old, "binary_id_new": binary_id_new})
+        self._write_request_log(
+            "diff_binary",
+            {"binary_id_old": binary_id_old, "binary_id_new": binary_id_new},
+            payload["summary"],
+        )
+        return payload
+
+    def diff_function(
+        self,
+        binary_id_old: str,
+        address_or_name_old: str,
+        binary_id_new: str,
+        address_or_name_new: str,
+        max_lines: int = 500,
+    ) -> dict[str, Any]:
+        old_payload = self.decompile(binary_id_old, address_or_name_old, max_lines=max_lines)
+        new_payload = self.decompile(binary_id_new, address_or_name_new, max_lines=max_lines)
+        payload = diff_function_payloads(old_payload, new_payload)
+        payload.update({
+            "binary_id_old": binary_id_old,
+            "binary_id_new": binary_id_new,
+        })
+        self._write_request_log(
+            "diff_function",
+            {
+                "binary_id_old": binary_id_old,
+                "address_or_name_old": address_or_name_old,
+                "binary_id_new": binary_id_new,
+                "address_or_name_new": address_or_name_new,
+            },
+            {"summary_signal": payload["summary_signal"]},
         )
         return payload
 
