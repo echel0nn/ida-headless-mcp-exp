@@ -553,21 +553,56 @@ class IDABinarySessionManager:
             elif pattern == "format_string":
                 hit = sorted(callees & print_like)
                 if hit:
+                    import ida_funcs
+
+                    ea = _resolve_address(item["address"])
+                    func = ida_funcs.get_func(ea)
+                    if func is None:
+                        continue
+                    cfunc = decompile_cfunc(func)
+                    sink_name = hit[0]
+                    sink = query_ctree_calls(
+                        cfunc,
+                        target_function=sink_name,
+                        argument_index=0,
+                        limit=3,
+                    )
                     decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
-                    if any(name + "(" in decomp["pseudocode"] for name in hit):
-                        match_detail = f"print-like call(s): {', '.join(hit)}"
+                    if sink["returned"] > 0 and sink["matches"]:
+                        first = sink["matches"][0]
+                        arg_preview = first["args_preview"][0] if first["arg_count"] > 0 else "<arg>"
+                        first_literal = (
+                            bool(first["args_string_literal"][0]) if first["arg_count"] > 0 else False
+                        ) or arg_preview.startswith('"')
+                        if not first_literal:
+                            match_detail = f"non-literal format argument {arg_preview!r} reaches {sink_name}"
 
             elif pattern == "command_injection":
                 hit = sorted(callees & cmd_like)
                 if hit:
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
-                    pseudo = decomp["pseudocode"]
-                    has_literal = any(
-                        (f'{name}("' in pseudo) or (f"{name}('" in pseudo)
-                        for name in hit
+                    import ida_funcs
+
+                    ea = _resolve_address(item["address"])
+                    func = ida_funcs.get_func(ea)
+                    if func is None:
+                        continue
+                    cfunc = decompile_cfunc(func)
+                    sink_name = hit[0]
+                    sink = query_ctree_calls(
+                        cfunc,
+                        target_function=sink_name,
+                        argument_index=0,
+                        limit=3,
                     )
-                    if not has_literal:
-                        match_detail = f"non-literal command execution via: {', '.join(hit)}"
+                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    if sink["returned"] > 0 and sink["matches"]:
+                        first = sink["matches"][0]
+                        arg_preview = first["args_preview"][0] if first["arg_count"] > 0 else "<arg>"
+                        first_literal = (
+                            bool(first["args_string_literal"][0]) if first["arg_count"] > 0 else False
+                        ) or arg_preview.startswith('"')
+                        if not first_literal:
+                            match_detail = f"non-literal command argument {arg_preview!r} reaches {sink_name}"
 
             elif pattern == "unchecked_length":
                 hit = sorted(callees & dangerous_names)
