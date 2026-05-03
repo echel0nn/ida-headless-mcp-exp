@@ -348,9 +348,9 @@ def entropy_analysis(binary_id: str) -> dict:
 
 
 @mcp.tool()
-def suspicious_strings(binary_id: str, limit: int = 100) -> dict:
-    """Classify string references into malware-relevant categories (URLs, IPs, commands, etc)."""
-    return _manager().suspicious_strings(binary_id, limit=limit)
+def classify_strings(binary_id: str, limit: int = 200) -> dict:
+    """Classify string references by format: URLs, IPs, registry paths, file paths, base64."""
+    return _manager().classify_strings(binary_id, limit=limit)
 
 
 
