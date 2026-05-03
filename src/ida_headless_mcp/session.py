@@ -234,7 +234,6 @@ class IDABinarySessionManager:
     def xrefs_to(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
         self._activate(binary_id)
         import ida_funcs
-        import ida_xref
         import idautils
 
         ea = _resolve_address(address_or_name)
@@ -245,7 +244,7 @@ class IDABinarySessionManager:
                 {
                     "from_address": f"0x{xref.frm:x}",
                     "from_function": ida_funcs.get_func_name(func.start_ea) if func else None,
-                    "type": ida_xref.get_xref_type_name(xref.type),
+                    "type": _xref_type_name(xref.type),
                 }
             )
         return {"binary_id": binary_id, "address": f"0x{ea:x}", "total": len(refs), "xrefs": refs}
@@ -253,7 +252,6 @@ class IDABinarySessionManager:
     def xrefs_from(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
         self._activate(binary_id)
         import ida_funcs
-        import ida_xref
         import idautils
 
         ea = _resolve_address(address_or_name)
@@ -272,7 +270,7 @@ class IDABinarySessionManager:
                     {
                         "to_address": f"0x{xref.to:x}",
                         "to_function": ida_funcs.get_func_name(callee.start_ea) if callee else None,
-                        "type": ida_xref.get_xref_type_name(xref.type),
+                        "type": _xref_type_name(xref.type),
                     }
                 )
         return {
@@ -1402,6 +1400,151 @@ class IDABinarySessionManager:
             "categories": {k: v for k, v in categories.items() if v},
         }
 
+    def path_feasibility(
+        self,
+        binary_id: str,
+        source_address: str,
+        sink_address: str,
+        *,
+        timeout_seconds: int = 60,
+        max_steps: int = 200000,
+    ) -> dict[str, Any]:
+        """Use angr symbolic execution to check if a path from source to sink is feasible."""
+        import time
+
+        import angr
+        import claripy  # noqa: F401 — used for constraint inspection
+
+        rec = self._require(binary_id)
+        source_ea = int(source_address.strip(), 16) if isinstance(source_address, str) else source_address
+        sink_ea = int(sink_address.strip(), 16) if isinstance(sink_address, str) else sink_address
+
+        proj = angr.Project(str(rec.path), auto_load_libs=False)
+        state = proj.factory.blank_state(addr=source_ea)
+        simgr = proj.factory.simulation_manager(state)
+
+        t0 = time.monotonic()
+        deadline = t0 + timeout_seconds
+        steps_taken = 0
+        found = False
+        timed_out = False
+
+        try:
+            while simgr.active and steps_taken < max_steps:
+                if time.monotonic() > deadline:
+                    timed_out = True
+                    break
+                simgr.step()
+                steps_taken += 1
+                # Check if any state reached the sink
+                reached = [s for s in simgr.active if s.addr == sink_ea]
+                if reached:
+                    found = True
+                    break
+                # Also check stashes
+                simgr.move(from_stash='active', to_stash='found',
+                          filter_func=lambda s: s.addr == sink_ea)
+                if simgr.found:
+                    found = True
+                    break
+                # Limit active states to prevent explosion
+                if len(simgr.active) > 64:
+                    simgr.active = simgr.active[:64]
+        except (TimeoutError, angr.errors.SimEngineError, Exception) as exc:
+            return {
+                "binary_id": binary_id,
+                "source": f"0x{source_ea:x}",
+                "sink": f"0x{sink_ea:x}",
+                "feasible": None,
+                "verdict": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "steps": steps_taken,
+                "elapsed_s": round(time.monotonic() - t0, 2),
+            }
+
+        elapsed = round(time.monotonic() - t0, 2)
+        constraint_count = 0
+        if found:
+            winning = simgr.found[0] if simgr.found else reached[0]
+            constraint_count = len(winning.solver.constraints)
+
+        return {
+            "binary_id": binary_id,
+            "source": f"0x{source_ea:x}",
+            "sink": f"0x{sink_ea:x}",
+            "feasible": found,
+            "verdict": "feasible" if found else ("timeout" if timed_out else "infeasible"),
+            "steps": steps_taken,
+            "elapsed_s": elapsed,
+            "constraint_count": constraint_count,
+            "active_states_at_end": len(simgr.active),
+        }
+
+    def find_paths(
+        self,
+        binary_id: str,
+        from_address: str,
+        to_address: str,
+        *,
+        avoid_addresses: list[str] | None = None,
+        timeout_seconds: int = 60,
+        max_paths: int = 3,
+    ) -> dict[str, Any]:
+        """Use angr exploration to find execution paths between two points."""
+        import time
+
+        import angr
+
+        rec = self._require(binary_id)
+        from_ea = int(from_address.strip(), 16)
+        to_ea = int(to_address.strip(), 16)
+        avoid_eas = [int(a.strip(), 16) for a in (avoid_addresses or [])]
+
+        proj = angr.Project(str(rec.path), auto_load_libs=False)
+        state = proj.factory.blank_state(addr=from_ea)
+        simgr = proj.factory.simulation_manager(state)
+
+        t0 = time.monotonic()
+        try:
+            simgr.explore(
+                find=to_ea,
+                avoid=avoid_eas,
+                timeout=timeout_seconds,
+                num_find=max_paths,
+            )
+        except (angr.errors.SimEngineError, Exception) as exc:
+            return {
+                "binary_id": binary_id,
+                "from": f"0x{from_ea:x}",
+                "to": f"0x{to_ea:x}",
+                "paths_found": 0,
+                "verdict": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "elapsed_s": round(time.monotonic() - t0, 2),
+            }
+
+        elapsed = round(time.monotonic() - t0, 2)
+        paths: list[dict[str, Any]] = []
+        for found_state in simgr.found[:max_paths]:
+            history_addrs = list(found_state.history.bbl_addrs)
+            paths.append({
+                "block_count": len(history_addrs),
+                "blocks": [f"0x{a:x}" for a in history_addrs[:50]],
+                "constraint_count": len(found_state.solver.constraints),
+                "truncated": len(history_addrs) > 50,
+            })
+
+        return {
+            "binary_id": binary_id,
+            "from": f"0x{from_ea:x}",
+            "to": f"0x{to_ea:x}",
+            "avoid": [f"0x{a:x}" for a in avoid_eas],
+            "paths_found": len(paths),
+            "verdict": "found" if paths else ("no_path" if not simgr.active else "exhausted"),
+            "paths": paths,
+            "elapsed_s": elapsed,
+        }
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -1581,6 +1724,17 @@ def _arch_name() -> str:
     import ida_ida
 
     return str(ida_ida.inf_get_procname())
+
+
+def _xref_type_name(xtype: int) -> str:
+    """Convert xref type constant to name. IDA 9.0 removed get_xref_type_name."""
+    names = {
+        0: 'Data_Unknown', 1: 'Data_Offset', 2: 'Data_Write', 3: 'Data_Read',
+        4: 'Data_Text', 5: 'Data_Informational',
+        16: 'Code_Far_Call', 17: 'Code_Near_Call', 18: 'Code_Far_Jump',
+        19: 'Code_Near_Jump', 20: 'Code_User', 21: 'Ordinary_Flow',
+    }
+    return names.get(xtype, f'type_{xtype}')
 
 
 def _seg_perms(seg: Any) -> str:
