@@ -353,6 +353,39 @@ def suspicious_strings(binary_id: str, limit: int = 100) -> dict:
     return _manager().suspicious_strings(binary_id, limit=limit)
 
 
+
+@mcp.tool()
+def path_feasibility(
+    binary_id: str,
+    source_address: str,
+    sink_address: str,
+    timeout_seconds: int = 60,
+    max_steps: int = 200000,
+) -> dict:
+    """Check if a path from source to sink is feasible using angr symbolic execution."""
+    return _manager().path_feasibility(
+        binary_id, source_address, sink_address,
+        timeout_seconds=timeout_seconds, max_steps=max_steps,
+    )
+
+
+@mcp.tool()
+def find_paths(
+    binary_id: str,
+    from_address: str,
+    to_address: str,
+    avoid_addresses: list[str] | None = None,
+    timeout_seconds: int = 60,
+    max_paths: int = 3,
+) -> dict:
+    """Find execution paths between two points using angr exploration."""
+    return _manager().find_paths(
+        binary_id, from_address, to_address,
+        avoid_addresses=avoid_addresses,
+        timeout_seconds=timeout_seconds, max_paths=max_paths,
+    )
+
+
 def create_server() -> FastMCP:
     return mcp
 
