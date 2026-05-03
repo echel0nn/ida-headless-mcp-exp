@@ -328,6 +328,31 @@ def value_ranges(binary_id: str, address_or_name: str) -> dict:
     return _manager().value_ranges(binary_id, address_or_name)
 
 
+
+@mcp.tool()
+def classify_behavior(binary_id: str) -> dict:
+    """Map imported APIs to ATT&CK-aligned behavioral categories (C2, persistence, execution, etc)."""
+    return _manager().classify_behavior(binary_id)
+
+
+@mcp.tool()
+def detect_anti_analysis(binary_id: str) -> dict:
+    """Detect anti-debug, anti-VM, and anti-sandbox techniques."""
+    return _manager().detect_anti_analysis(binary_id)
+
+
+@mcp.tool()
+def entropy_analysis(binary_id: str) -> dict:
+    """Per-section Shannon entropy for packing/encryption detection."""
+    return _manager().entropy_analysis(binary_id)
+
+
+@mcp.tool()
+def suspicious_strings(binary_id: str, limit: int = 100) -> dict:
+    """Classify string references into malware-relevant categories (URLs, IPs, commands, etc)."""
+    return _manager().suspicious_strings(binary_id, limit=limit)
+
+
 def create_server() -> FastMCP:
     return mcp
 
