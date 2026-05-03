@@ -16,6 +16,8 @@ from .hexrays_analysis import (
     get_argument_names,
     get_hexrays_warnings,
     get_microcode_text,
+    microcode_def_use,
+    microcode_value_ranges,
     pseudocode_slice,
     query_ctree_call_sequences,
     query_ctree_calls,
@@ -981,6 +983,45 @@ class IDABinarySessionManager:
             context_lines=context_lines,
             max_slices=max_slices,
         )
+        result["binary_id"] = binary_id
+        return result
+
+    def def_use(
+        self,
+        binary_id: str,
+        address_or_name: str,
+        *,
+        target_callee: str = "",
+        max_instructions: int = 200,
+    ) -> dict[str, Any]:
+        """Microcode-level use/def analysis for a function."""
+        self._activate(binary_id)
+        import ida_funcs
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        result = microcode_def_use(
+            cfunc,
+            target_callee=target_callee,
+            max_instructions=max_instructions,
+        )
+        result["binary_id"] = binary_id
+        return result
+
+    def value_ranges(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
+        """IR-backed value-range annotations from the decompiler's microcode."""
+        self._activate(binary_id)
+        import ida_funcs
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        result = microcode_value_ranges(cfunc)
         result["binary_id"] = binary_id
         return result
 

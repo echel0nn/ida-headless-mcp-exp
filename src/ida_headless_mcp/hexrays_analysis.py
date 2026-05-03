@@ -14,6 +14,8 @@ __all__ = [
     "query_ctree_unchecked_calls",
     "get_hexrays_warnings",
     "pseudocode_slice",
+    "microcode_def_use",
+    "microcode_value_ranges",
 ]
 
 
@@ -747,4 +749,187 @@ def pseudocode_slice(
         'total_lines': total_lines,
         'slices_count': len(slices),
         'slices': slices,
+    }
+
+
+
+def microcode_def_use(
+    cfunc: Any,
+    *,
+    target_callee: str = "",
+    max_instructions: int = 200,
+) -> dict[str, Any]:
+    """Extract microcode-level use/def lists for instructions in a function.
+
+    For each microcode instruction, return what locations it reads (uses)
+    and writes (defs). When *target_callee* is set, only report instructions
+    that are calls to that callee.
+
+    Also reports if the same use-list appears in multiple call instructions
+    (same-arg evidence for double-free, use-after-free).
+    """
+    import ida_hexrays
+
+    mba = cfunc.mba
+    target_fn = target_callee.strip().lower()
+    instructions: list[dict[str, Any]] = []
+    total_scanned = 0
+
+    for bi in range(mba.qty):
+        blk = mba.get_mblock(bi)
+        ins = blk.head
+        while ins and total_scanned < max_instructions:
+            total_scanned += 1
+            use = blk.build_use_list(ins, ida_hexrays.MUST_ACCESS)
+            defs = blk.build_def_list(ins, ida_hexrays.MUST_ACCESS)
+            u_str = use.dstr() if hasattr(use, 'dstr') else ''
+            d_str = defs.dstr() if hasattr(defs, 'dstr') else ''
+
+            # Determine if this is a call and the callee name
+            callee_name: str | None = None
+            is_call = ins.opcode == ida_hexrays.m_call
+            if is_call:
+                import ida_name as _ida_name
+                try:
+                    if hasattr(ins.l, 'helper') and ins.l.helper:
+                        callee_name = str(ins.l.helper)
+                    elif hasattr(ins.l, 'g'):
+                        raw_g = ins.l.g
+                        if isinstance(raw_g, int):
+                            callee_name = _ida_name.get_ea_name(raw_g) or f'0x{raw_g:x}'
+                        else:
+                            callee_name = str(raw_g)
+                except Exception:
+                    pass
+
+            # Filter by target callee if requested
+            if target_fn:
+                if not is_call:
+                    ins = ins.next
+                    continue
+                callee_check = (callee_name or '').lower()
+                callee_stripped = callee_check[2:] if callee_check.startswith('j_') else callee_check
+                if target_fn not in callee_stripped:
+                    ins = ins.next
+                    continue
+
+            instructions.append({
+                'block': bi,
+                'address': f'0x{ins.ea:x}',
+                'opcode': ins.opcode,
+                'is_call': is_call,
+                'callee': callee_name,
+                'use_list': u_str,
+                'def_list': d_str,
+            })
+            ins = ins.next
+
+    # Detect shared-use patterns (same use_list in multiple calls)
+    call_uses: dict[str, list[dict[str, Any]]] = {}
+    for entry in instructions:
+        if entry['is_call'] and entry['use_list']:
+            key = entry['use_list']
+            call_uses.setdefault(key, []).append(entry)
+    shared_args = [
+        {
+            'use_list': k,
+            'call_count': len(v),
+            'calls': [{'address': c['address'], 'callee': c['callee']} for c in v],
+        }
+        for k, v in call_uses.items()
+        if len(v) > 1
+    ]
+
+    return {
+        'entry_ea': f'0x{cfunc.entry_ea:x}',
+        'function_name': _function_name(cfunc),
+        'maturity': _maturity_const_to_name(getattr(mba, 'maturity', None)),
+        'blocks': mba.qty,
+        'instructions_scanned': total_scanned,
+        'instructions_matched': len(instructions),
+        'instructions': instructions,
+        'shared_arg_patterns': shared_args,
+    }
+
+
+
+def microcode_value_ranges(cfunc: Any) -> dict[str, Any]:
+    """Extract value-range annotations from the decompiler's microcode.
+
+    IDA's value-range analysis computes constraints on variables at each
+    basic block boundary (e.g., 'rcx.8:!=0' means rcx is known non-zero).
+    These are IR-backed bounds proofs, not heuristic guesses.
+
+    We extract them from the microcode text representation because the
+    programmatic get_valranges() API is fragile across maturity levels.
+    """
+    import ida_hexrays
+
+    mba = cfunc.mba
+    printer = ida_hexrays.qstring_printer_t(cfunc, False)
+    mba._print(printer)
+    text = str(printer.s)
+
+    # Parse VALRANGES lines from the microcode text
+    # Format: '; VALRANGES: rcx.8:!=0' or '; VALRANGES: rsi.4:[0,0x40]'
+    ranges: list[dict[str, Any]] = []
+    current_block = -1
+    for line in text.splitlines():
+        stripped = line.strip()
+
+        # Track block numbers (lines like '2. 0 ; 2WAY-BLOCK 2 ...')
+        if '. 0 ;' in stripped and '-BLOCK' in stripped:
+            parts = stripped.split('. 0 ;')[0].strip()
+            try:
+                current_block = int(parts)
+            except ValueError:
+                pass
+
+        # Match VALRANGES annotation
+        if 'VALRANGES:' in stripped:
+            vr_text = stripped.split('VALRANGES:', 1)[1].strip()
+            # Parse individual range entries (comma-separated)
+            for entry in vr_text.split(','):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                # Split variable:constraint (e.g., 'rcx.8:!=0')
+                if ':' in entry:
+                    parts = entry.split(':', 1)
+                    var_name = parts[0].strip()
+                    constraint = parts[1].strip()
+                else:
+                    var_name = entry
+                    constraint = 'present'
+                ranges.append({
+                    'block': current_block,
+                    'variable': var_name,
+                    'constraint': constraint,
+                })
+
+    # Classify each variable's boundedness
+    unbounded_vars: list[str] = []
+    bounded_vars: list[dict[str, Any]] = []
+    seen_vars = set()
+    for r in ranges:
+        v = r['variable']
+        if v in seen_vars:
+            continue
+        seen_vars.add(v)
+        c = r['constraint']
+        # If constraint is just !=0 or similar, the value is still unbounded
+        # If constraint contains a range like [0,64], it's bounded
+        if '[' in c and ',' in c:
+            bounded_vars.append({'variable': v, 'constraint': c})
+        else:
+            unbounded_vars.append(v)
+
+    return {
+        'entry_ea': f'0x{cfunc.entry_ea:x}',
+        'function_name': _function_name(cfunc),
+        'maturity': _maturity_const_to_name(getattr(mba, 'maturity', None)),
+        'blocks': mba.qty,
+        'range_annotations': ranges,
+        'bounded_vars': bounded_vars,
+        'unbounded_vars': unbounded_vars,
     }
