@@ -865,6 +865,54 @@ class IDABinarySessionManager:
 
         return payload
 
+    def diff_survey(
+        self,
+        binary_id_old: str,
+        binary_id_new: str,
+        *,
+        max_changed: int = 20,
+        include_pseudocode_diff: bool = True,
+        max_diff_lines: int = 60,
+    ) -> dict[str, Any]:
+        """One-call N-day survey: diff summary + per-function diffs + security ranking."""
+        binary_diff = self.diff_binary(binary_id_old, binary_id_new)
+        changed = binary_diff.get("changed", [])[:max_changed]
+
+        enriched: list[dict[str, Any]] = []
+        for entry in changed:
+            item: dict[str, Any] = {
+                "name_old": entry["name_old"],
+                "name_new": entry["name_new"],
+                "security_rank": entry.get("security_rank", 0),
+                "similarity": entry["similarity"],
+                "size_delta": entry["size_delta"],
+                "complexity_delta": entry["complexity_delta"],
+                "callees_added": entry["callees_added"],
+                "callees_removed": entry["callees_removed"],
+            }
+            if include_pseudocode_diff:
+                try:
+                    fn_diff = self.diff_function(
+                        binary_id_old, entry["address_old"],
+                        binary_id_new, entry["address_new"],
+                        max_lines=max_diff_lines,
+                    )
+                    item["summary_signal"] = fn_diff.get("summary_signal", "unknown")
+                    item["diff_preview"] = fn_diff.get("diff_unified", "")[:2000]
+                except (ValueError, RuntimeError):
+                    item["summary_signal"] = "decompile_failed"
+                    item["diff_preview"] = None
+            enriched.append(item)
+
+        return {
+            "binary_id_old": binary_id_old,
+            "binary_id_new": binary_id_new,
+            "summary": binary_diff["summary"],
+            "added": binary_diff.get("added", []),
+            "removed": binary_diff.get("removed", []),
+            "changed": enriched,
+        }
+
     def query_ctree(
         self,
         binary_id: str,
