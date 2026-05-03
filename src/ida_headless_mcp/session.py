@@ -14,7 +14,9 @@ from .function_index import FunctionIndex, build_function_index
 from .hexrays_analysis import (
     decompile_cfunc,
     get_argument_names,
+    get_hexrays_warnings,
     get_microcode_text,
+    pseudocode_slice,
     query_ctree_call_sequences,
     query_ctree_calls,
     query_ctree_unchecked_calls,
@@ -491,7 +493,14 @@ class IDABinarySessionManager:
         max_lines: int = 120,
     ) -> dict[str, Any]:
         self._activate(binary_id)
+        rec = self._require(binary_id)
         pattern = pattern_type.strip().lower()
+
+        # Pattern result cache: full results for unfiltered scans
+        if not name_pattern:
+            cache_path = self._pattern_cache_path(rec.sha256, pattern)
+            if cache_path.exists():
+                return json.loads(cache_path.read_text(encoding='utf-8'))
         query = self._indices[binary_id].query(
             name_pattern=name_pattern,
             exclude_thunks=True,
@@ -818,6 +827,11 @@ class IDABinarySessionManager:
             "count": len(matches),
             "matches": matches,
         }
+        # Cache unfiltered results for next time
+        if not name_pattern:
+            cache_path = self._pattern_cache_path(rec.sha256, pattern)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(payload, separators=(',', ':')), encoding='utf-8')
 
         return payload
 
@@ -929,6 +943,114 @@ class IDABinarySessionManager:
 
         return payload
 
+    def hexrays_warnings(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
+        self._activate(binary_id)
+        import ida_funcs
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        result = get_hexrays_warnings(cfunc)
+        result["binary_id"] = binary_id
+        return result
+
+    def pseudocode_slice_fn(
+        self,
+        binary_id: str,
+        address_or_name: str,
+        *,
+        focus_callee: str = "",
+        focus_address: str = "",
+        context_lines: int = 5,
+        max_slices: int = 10,
+    ) -> dict[str, Any]:
+        self._activate(binary_id)
+        import ida_funcs
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        result = pseudocode_slice(
+            cfunc,
+            focus_callee=focus_callee,
+            focus_address=focus_address,
+            context_lines=context_lines,
+            max_slices=max_slices,
+        )
+        result["binary_id"] = binary_id
+        return result
+
+    def binary_survey(self, binary_id: str, max_hotspots: int = 10) -> dict[str, Any]:
+        """One-call orientation: metadata + attack surface + hotspots + pattern hits."""
+        self._activate(binary_id)
+        rec = self._require(binary_id)
+        index = self._indices[binary_id]
+
+        # Attack surface: dangerous and network-related imports
+        dangerous_imports = {
+            "memcpy", "memmove", "strcpy", "sprintf", "gets", "strcat",
+            "system", "popen", "execve", "free", "malloc", "realloc",
+        }
+        network_imports = {
+            "recv", "send", "accept", "bind", "listen", "connect",
+            "recvfrom", "sendto", "wsarecv", "wsasend", "read", "write",
+        }
+
+        user_funcs = [e for e in index.entries if not e.is_thunk and not e.is_library]
+        all_callees: set[str] = set()
+        for e in user_funcs:
+            all_callees.update(c.lower() for c in e.callees)
+
+        # Hotspots by complexity
+        by_complexity = sorted(user_funcs, key=lambda e: -e.cyclomatic_complexity)[:max_hotspots]
+
+        # Pattern hits: run cached patterns if available
+        pattern_hits: dict[str, int] = {}
+        all_patterns = [
+            "dangerous_function", "format_string", "command_injection",
+            "unchecked_length", "signed_size", "toctou", "double_free",
+            "use_after_free", "null_deref", "integer_overflow",
+        ]
+        for ptype in all_patterns:
+            cache_path = self._pattern_cache_path(rec.sha256, ptype)
+            if cache_path.exists():
+                cached = json.loads(cache_path.read_text(encoding='utf-8'))
+                pattern_hits[ptype] = cached.get("count", 0)
+
+        return {
+            "binary_id": binary_id,
+            "overview": {
+                "root_filename": rec.root_filename,
+                "format": rec.format,
+                "arch": rec.arch,
+                "bits": rec.bits,
+                "functions_total": rec.function_count,
+                "functions_user": len(user_funcs),
+                "functions_library": rec.function_count - len(user_funcs),
+                "mitigations": rec.mitigations,
+            },
+            "attack_surface": {
+                "exported_functions": rec.exports_count,
+                "imports_dangerous": sorted(all_callees & dangerous_imports),
+                "imports_network": sorted(all_callees & network_imports),
+            },
+            "hotspots": [
+                {
+                    "name": e.name,
+                    "address": f"0x{e.address:x}",
+                    "complexity": e.cyclomatic_complexity,
+                    "callees_count": len(e.callees),
+                    "callers_count": len(e.callers),
+                    "string_refs_count": len(e.string_refs),
+                }
+                for e in by_complexity
+            ],
+            "pattern_hits": pattern_hits,
+        }
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -1023,6 +1145,9 @@ class IDABinarySessionManager:
 
     def _index_cache_path(self, sha256: str) -> Path:
         return self.settings.cache_dir / sha256 / "index.json"
+
+    def _pattern_cache_path(self, sha256: str, pattern_type: str) -> Path:
+        return self.settings.cache_dir / sha256 / "patterns" / f"{pattern_type}_v1.json"
 
     def _load_or_build_index(self, sha256: str) -> FunctionIndex:
         index_path = self._index_cache_path(sha256)

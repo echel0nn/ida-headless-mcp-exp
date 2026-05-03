@@ -12,6 +12,8 @@ __all__ = [
     "get_argument_names",
     "query_ctree_call_sequences",
     "query_ctree_unchecked_calls",
+    "get_hexrays_warnings",
+    "pseudocode_slice",
 ]
 
 
@@ -630,4 +632,119 @@ def query_ctree_unchecked_calls(
         'function_name': _function_name(cfunc),
         'matches': matches,
         'returned': len(matches),
+    }
+
+
+
+def get_hexrays_warnings(cfunc: Any) -> dict[str, Any]:
+    """Extract decompiler warnings emitted by Hex-Rays for this function.
+
+    Warnings signal degraded confidence: bad stack analysis, unrecovered
+    types, inconsistent CFG, etc.  The obligation system should treat
+    downstream claims as weaker when warnings are present.
+    """
+    warnings: list[dict[str, Any]] = []
+    try:
+        raw = cfunc.get_warnings()
+        if raw:
+            for w in raw:
+                ea = getattr(w, 'ea', None)
+                text = str(w) if not hasattr(w, 'text') else str(w.text)
+                warnings.append({
+                    'address': f'0x{ea:x}' if ea is not None else None,
+                    'text': text,
+                })
+    except (AttributeError, TypeError):
+        # IDA version may not expose get_warnings() — degrade gracefully
+        pass
+    return {
+        'entry_ea': f'0x{cfunc.entry_ea:x}',
+        'function_name': _function_name(cfunc),
+        'warning_count': len(warnings),
+        'warnings': warnings,
+        'confidence': 'degraded' if warnings else 'normal',
+    }
+
+
+def pseudocode_slice(
+    cfunc: Any,
+    *,
+    focus_callee: str = "",
+    focus_address: str = "",
+    context_lines: int = 5,
+    max_slices: int = 10,
+) -> dict[str, Any]:
+    """Return only the pseudocode lines around specific call sites or addresses.
+
+    Instead of returning a 400-line function, return the 10-20 lines that
+    matter: the code paths reaching each instance of *focus_callee* or
+    *focus_address*, with *context_lines* of surrounding context.
+    """
+    # Get full pseudocode lines
+    try:
+        sv = cfunc.get_pseudocode()
+    except (AttributeError, TypeError):
+        sv = None
+
+    lines: list[str] = []
+    if sv is not None:
+        import ida_lines
+        for i in range(sv.size()):
+            raw_line = str(sv[i].line)
+            lines.append(ida_lines.tag_remove(raw_line))
+    else:
+        lines = str(cfunc).splitlines()
+
+    total_lines = len(lines)
+    focus_fn = focus_callee.strip().lower()
+    focus_addr: int | None = None
+    if focus_address.strip():
+        try:
+            focus_addr = int(focus_address.strip(), 16)
+        except ValueError:
+            pass
+
+    # Find matching lines
+    hit_indices: list[int] = []
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        if focus_fn and focus_fn + '(' in line_lower:
+            hit_indices.append(i)
+        elif focus_fn and focus_fn in line_lower:
+            hit_indices.append(i)
+
+    # If we have a CTree, also match by address via eamap
+    if focus_addr is not None and sv is not None:
+        try:
+            cfunc.get_eamap()  # ensure eamap is built
+            for i in range(sv.size()):
+                item = cfunc.get_line_item(i)
+                if item is not None and hasattr(item, 'ea') and item.ea == focus_addr:
+                    if i not in hit_indices:
+                        hit_indices.append(i)
+        except (AttributeError, TypeError):
+            pass
+
+    # Deduplicate and limit
+    hit_indices = sorted(set(hit_indices))[:max_slices]
+
+    # Build slices with context
+    slices: list[dict[str, Any]] = []
+    for idx in hit_indices:
+        start = max(0, idx - context_lines)
+        end = min(total_lines, idx + context_lines + 1)
+        slice_lines = lines[start:end]
+        slices.append({
+            'focus_line': idx + 1,
+            'range': f'{start + 1}-{end}',
+            'pseudocode': '\n'.join(slice_lines),
+            'focus_text': lines[idx].strip(),
+        })
+
+    return {
+        'entry_ea': f'0x{cfunc.entry_ea:x}',
+        'function_name': _function_name(cfunc),
+        'total_lines': total_lines,
+        'slices_count': len(slices),
+        'slices': slices,
     }
