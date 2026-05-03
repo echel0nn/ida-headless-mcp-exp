@@ -10,6 +10,8 @@ __all__ = [
     "get_microcode_text",
     "trace_ctree_dataflow",
     "get_argument_names",
+    "query_ctree_call_sequences",
+    "query_ctree_unchecked_calls",
 ]
 
 
@@ -442,3 +444,190 @@ def _maturity_const_to_name(mat: Any) -> str:
         ida_hexrays.MMAT_LVARS: 'lvars',
     }
     return mapping.get(mat, str(mat))
+
+
+
+def query_ctree_call_sequences(
+    cfunc: Any,
+    *,
+    first_functions: set[str],
+    second_functions: set[str],
+    shared_argument_index: int | None = None,
+    first_arg_index: int = 0,
+    match_any_second_arg: bool = False,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Find ordered pairs of calls where a first-set call precedes a second-set call.
+
+    Argument matching modes:
+      - shared_argument_index=N: both calls must have the same preview at arg N
+      - match_any_second_arg=True: arg first_arg_index of the first call must match
+        ANY argument of the second call (useful for use-after-free where free(p)
+        then printf(fmt, p) shares p at different positions)
+      - shared_argument_index=None and match_any_second_arg=False: no arg constraint
+    """
+    import ida_hexrays
+
+    first_fn = {f.lower() for f in first_functions}
+    second_fn = {f.lower() for f in second_functions}
+    calls: list[dict[str, Any]] = []
+
+    class Visitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self) -> None:
+            super().__init__(ida_hexrays.CV_FAST)
+
+        def visit_expr(self, expr):  # type: ignore[override]
+            if expr.op != ida_hexrays.cot_call:
+                return 0
+            callee = _callee_name(expr)
+            if callee is None:
+                return 0
+            callee_lower = callee.lower()
+            callee_stripped = callee_lower[2:] if callee_lower.startswith('j_') else callee_lower
+            is_first = callee_stripped in first_fn
+            is_second = callee_stripped in second_fn
+            if not is_first and not is_second:
+                return 0
+            args = list(expr.a) if expr.a is not None else []
+            all_previews = [_expr_preview(a, cfunc) for a in args]
+            calls.append({
+                'ea': expr.ea,
+                'address': f'0x{expr.ea:x}',
+                'callee': callee,
+                'callee_stripped': callee_stripped,
+                'is_first': is_first,
+                'is_second': is_second,
+                'all_previews': all_previews,
+            })
+            return 0
+
+    Visitor().apply_to_exprs(cfunc.body, None)
+    calls.sort(key=lambda c: c['ea'])
+
+    def _arg_at(call: dict[str, Any], idx: int) -> str | None:
+        previews = call['all_previews']
+        return previews[idx] if idx < len(previews) else None
+
+    pairs: list[dict[str, Any]] = []
+    for i, first in enumerate(calls):
+        if not first['is_first']:
+            continue
+        first_key = _arg_at(first, first_arg_index)
+        for second in calls[i + 1:]:
+            if not second['is_second']:
+                continue
+            shared_arg: str | None = None
+            if shared_argument_index is not None:
+                a = _arg_at(first, shared_argument_index)
+                b = _arg_at(second, shared_argument_index)
+                if a is None or b is None or a != b:
+                    continue
+                shared_arg = a
+            elif match_any_second_arg and first_key is not None:
+                if first_key not in second['all_previews']:
+                    continue
+                shared_arg = first_key
+            pairs.append({
+                'first_callee': first['callee'],
+                'first_address': first['address'],
+                'second_callee': second['callee'],
+                'second_address': second['address'],
+                'shared_arg': shared_arg,
+            })
+            if len(pairs) >= limit:
+                break
+        if len(pairs) >= limit:
+            break
+
+    return {
+        'entry_ea': f'0x{cfunc.entry_ea:x}',
+        'function_name': _function_name(cfunc),
+        'pairs_found': len(pairs),
+        'pairs': pairs,
+    }
+
+
+def query_ctree_unchecked_calls(
+    cfunc: Any,
+    *,
+    target_functions: set[str],
+    must_deref: bool = True,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Find calls whose return value is used without a NULL/error check.
+
+    Detects patterns like:
+      - null_deref: p = malloc(n); *p = x;  (no if(p) guard)
+      - unchecked_alloc: buf = realloc(old, n); buf[0] = ...;
+    """
+    import ida_hexrays
+
+    target_fn = {f.lower() for f in target_functions}
+    # Collect all assignments whose RHS is a call to a target function
+    alloc_assignments: list[dict[str, Any]] = []
+    # Collect all if-guarded variable names
+    guarded_vars: set[str] = set()
+
+    class AssignVisitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self) -> None:
+            super().__init__(ida_hexrays.CV_FAST)
+
+        def visit_expr(self, expr):  # type: ignore[override]
+            if expr.op != ida_hexrays.cot_asg:
+                return 0
+            rhs = expr.y
+            if rhs is None or rhs.op != ida_hexrays.cot_call:
+                return 0
+            callee = _callee_name(rhs)
+            if callee is None:
+                return 0
+            callee_lower = callee.lower()
+            callee_stripped = callee_lower[2:] if callee_lower.startswith('j_') else callee_lower
+            if callee_stripped not in target_fn:
+                return 0
+            lhs_preview = _expr_preview(expr.x, cfunc)
+            alloc_assignments.append({
+                'address': f'0x{expr.ea:x}',
+                'ea': expr.ea,
+                'lhs': lhs_preview,
+                'callee': callee,
+            })
+            return 0
+
+    class IfGuardVisitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self) -> None:
+            super().__init__(ida_hexrays.CV_FAST)
+
+        def visit_insn(self, insn):  # type: ignore[override]
+            if insn.op != ida_hexrays.cit_if:
+                return 0
+            cond = insn.cif.expr
+            cond_preview = _expr_preview(cond, cfunc).lower()
+            # extract variable names from simple conditions like 'if ( v1 )' or 'if ( !v1 )'
+            for token in _normalize_expr(cond_preview).replace('!', ' ').split():
+                guarded_vars.add(token.strip())
+            return 0
+
+    AssignVisitor().apply_to_exprs(cfunc.body, None)
+    IfGuardVisitor().apply_to(cfunc.body, None)
+
+    matches: list[dict[str, Any]] = []
+    for alloc in alloc_assignments:
+        lhs_norm = _normalize_expr(alloc['lhs']).lower()
+        if lhs_norm in guarded_vars:
+            continue
+        matches.append({
+            'address': alloc['address'],
+            'variable': alloc['lhs'],
+            'callee': alloc['callee'],
+            'guarded': False,
+        })
+        if len(matches) >= limit:
+            break
+
+    return {
+        'entry_ea': f'0x{cfunc.entry_ea:x}',
+        'function_name': _function_name(cfunc),
+        'matches': matches,
+        'returned': len(matches),
+    }
