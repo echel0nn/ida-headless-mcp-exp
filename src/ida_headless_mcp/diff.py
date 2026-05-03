@@ -15,6 +15,7 @@ __all__ = [
     "compare_function_entries",
     "diff_binary_indexes",
     "diff_function_payloads",
+    "rank_security_relevance",
 ]
 
 
@@ -95,7 +96,10 @@ def compare_function_entries(old: FunctionIndexEntry, new: FunctionIndexEntry) -
     )
 
 
-def diff_binary_indexes(old_entries: list[FunctionIndexEntry], new_entries: list[FunctionIndexEntry]) -> dict[str, Any]:
+def diff_binary_indexes(
+    old_entries: list[FunctionIndexEntry],
+    new_entries: list[FunctionIndexEntry],
+) -> dict[str, Any]:
     old_by_name = {e.name: e for e in old_entries}
     new_by_name = {e.name: e for e in new_entries}
 
@@ -106,6 +110,7 @@ def diff_binary_indexes(old_entries: list[FunctionIndexEntry], new_entries: list
     removed_names = sorted(old_names - new_names)
     common_names = sorted(old_names & new_names)
 
+    # Phase 1: name-based matching on common names
     changed: list[FunctionPairMatch] = []
     unchanged = 0
     for name in common_names:
@@ -116,12 +121,40 @@ def diff_binary_indexes(old_entries: list[FunctionIndexEntry], new_entries: list
             continue
         changed.append(compare_function_entries(old, new))
 
+    # Phase 2: structure-hash matching for unmatched functions
+    # Try to pair added/removed functions by structural similarity
+    if added_names and removed_names:
+        old_unmatched = {n: old_by_name[n] for n in removed_names}
+        new_unmatched = {n: new_by_name[n] for n in added_names}
+        # Build structure hashes (size_bucket, complexity, callee_count)
+        for old_name, old_entry in list(old_unmatched.items()):
+            best_score = 0.0
+            best_new_name: str | None = None
+            for new_name, new_entry in new_unmatched.items():
+                score = _structure_similarity(old_entry, new_entry)
+                if score > best_score and score >= 0.6:
+                    best_score = score
+                    best_new_name = new_name
+            if best_new_name is not None:
+                pair = compare_function_entries(
+                    old_unmatched[old_name], new_unmatched[best_new_name]
+                )
+                changed.append(pair)
+                del old_unmatched[old_name]
+                del new_unmatched[best_new_name]
+        # Update added/removed to reflect matched pairs
+        added_names = sorted(new_unmatched.keys())
+        removed_names = sorted(old_unmatched.keys())
+
     summary = FunctionDiffSummary(
         functions_added=len(added_names),
         functions_removed=len(removed_names),
         functions_changed=len(changed),
         functions_unchanged=unchanged,
-        match_confidence_avg=round(sum(c.similarity for c in changed) / len(changed), 4) if changed else 1.0,
+        match_confidence_avg=(
+            round(sum(c.similarity for c in changed) / len(changed), 4)
+            if changed else 1.0
+        ),
     )
 
     return {
@@ -153,8 +186,9 @@ def diff_binary_indexes(old_entries: list[FunctionIndexEntry], new_entries: list
                 "callees_removed": list(c.removed_callees),
                 "strings_added": list(c.added_strings),
                 "strings_removed": list(c.removed_strings),
+                "security_rank": rank_security_relevance(c),
             }
-            for c in changed
+            for c in sorted(changed, key=lambda c: -rank_security_relevance(c))
         ],
     }
 
@@ -275,3 +309,78 @@ def _summary_signal(diff_text: str, added_calls: list[str], added_strings: list[
     if added_calls or added_strings:
         return "logic_rewritten"
     return "unknown"
+
+
+
+def _structure_similarity(old: FunctionIndexEntry, new: FunctionIndexEntry) -> float:
+    """Score structural similarity between two functions (0.0-1.0).
+
+    Used for matching renamed/stripped functions by their shape.
+    """
+    score = 1.0
+    # Size similarity (within 50% = ok)
+    size_ratio = min(old.size_bytes, new.size_bytes) / max(old.size_bytes or 1, new.size_bytes or 1)
+    score *= (0.3 + 0.7 * size_ratio)
+    # Complexity similarity
+    cx_ratio = min(old.cyclomatic_complexity, new.cyclomatic_complexity) / max(
+        old.cyclomatic_complexity or 1, new.cyclomatic_complexity or 1
+    )
+    score *= (0.3 + 0.7 * cx_ratio)
+    # Callee overlap (Jaccard)
+    old_callees = set(old.callees)
+    new_callees = set(new.callees)
+    if old_callees or new_callees:
+        jaccard = len(old_callees & new_callees) / len(old_callees | new_callees)
+        score *= (0.2 + 0.8 * jaccard)
+    # Same library/thunk status
+    if old.is_library != new.is_library:
+        score *= 0.5
+    if old.is_thunk != new.is_thunk:
+        score *= 0.3
+    return round(score, 4)
+
+
+DANGEROUS_SINKS = {
+    "memcpy", "memmove", "strcpy", "sprintf", "gets", "strcat",
+    "malloc", "calloc", "realloc", "free",
+    "system", "popen", "execve", "execl",
+    "printf", "fprintf", "snprintf",
+}
+
+
+def rank_security_relevance(pair: FunctionPairMatch) -> float:
+    """Score a changed function's security relevance (0.0 = irrelevant, 10.0 = critical).
+
+    Higher scores mean the change is more likely to be a security fix.
+    """
+    score = 0.0
+    # Bounds/validation callees added
+    validation_names = {"validate", "check", "bounds", "verify", "sanitize"}
+    for callee in pair.added_callees:
+        callee_lower = callee.lower()
+        if any(v in callee_lower for v in validation_names):
+            score += 3.0
+        if callee_lower in DANGEROUS_SINKS:
+            score += 1.0  # new dangerous call is interesting
+    # Dangerous callees removed (sanitized away)
+    for callee in pair.removed_callees:
+        if callee.lower() in DANGEROUS_SINKS:
+            score += 2.0
+    # Complexity increase (more branches = more validation)
+    if pair.new_complexity > pair.old_complexity:
+        score += min(2.0, (pair.new_complexity - pair.old_complexity) * 0.3)
+    # Size increase (more code = likely added checks)
+    if pair.new_size > pair.old_size:
+        score += min(1.5, (pair.new_size - pair.old_size) / 50.0)
+    # Error strings added
+    error_terms = {"invalid", "overflow", "too large", "too long", "bounds", "error"}
+    for s in pair.added_strings:
+        if any(t in s.lower() for t in error_terms):
+            score += 2.0
+            break
+    # Low similarity = major rewrite = likely security fix
+    if pair.similarity < 0.7:
+        score += 2.0
+    elif pair.similarity < 0.85:
+        score += 1.0
+    return round(min(10.0, score), 2)
