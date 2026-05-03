@@ -256,6 +256,39 @@ def trace_dataflow(
     )
 
 
+@mcp.tool()
+def hexrays_warnings(binary_id: str, address_or_name: str) -> dict:
+    """Return Hex-Rays decompiler warnings for a function (confidence signals)."""
+    return _manager().hexrays_warnings(binary_id, address_or_name)
+
+
+@mcp.tool()
+def pseudocode_slice_view(
+    binary_id: str,
+    address_or_name: str,
+    focus_callee: str = "",
+    focus_address: str = "",
+    context_lines: int = 5,
+    max_slices: int = 10,
+) -> dict:
+    """Return focused pseudocode slices around specific call sites or addresses."""
+    return _manager().pseudocode_slice_fn(
+        binary_id,
+        address_or_name,
+        focus_callee=focus_callee,
+        focus_address=focus_address,
+        context_lines=context_lines,
+        max_slices=max_slices,
+    )
+
+
+@mcp.tool()
+def binary_survey(binary_id: str, max_hotspots: int = 10) -> dict:
+    """One-call binary orientation: metadata, attack surface, hotspots, cached pattern hits."""
+    return _manager().binary_survey(binary_id, max_hotspots=max_hotspots)
+
+
+
 def create_server() -> FastMCP:
     return mcp
 
