@@ -15,9 +15,11 @@ from .hexrays_analysis import (
     decompile_cfunc,
     get_argument_names,
     get_microcode_text,
+    query_ctree_call_sequences,
     query_ctree_calls,
+    query_ctree_unchecked_calls,
     trace_ctree_dataflow,
- )
+)
 
 __all__ = ["BinaryRecord", "IDABinarySessionManager"]
 
@@ -536,6 +538,14 @@ class IDABinarySessionManager:
         }
         print_like = {"printf", "fprintf", "sprintf", "snprintf", "syslog", "vsnprintf"}
         cmd_like = {"system", "popen", "winexec", "execl", "execlp", "execve", "execvp"}
+        check_then_use_first = {"_access", "access", "stat", "lstat", "_stat", "_stat64", "pathfileexists"}
+        check_then_use_second = {"fopen", "open", "_open", "createfilea", "createfilew", "_wfopen", "fopen_s"}
+        free_like = {"free", "_free", "globalfree", "localfree", "heapfree", "virtualfree"}
+        use_sinks = {"printf", "fprintf", "memcpy", "memmove", "strcpy", "strlen", "strcmp", "puts", "fputs", "fwrite"}
+        alloc_like = {
+            "malloc", "calloc", "realloc", "_malloc", "_calloc", "_realloc",
+            "globalalloc", "localalloc", "heapalloc", "virtualalloc",
+        }
 
         for item in candidates:
             if len(matches) >= limit:
@@ -682,6 +692,140 @@ class IDABinarySessionManager:
                             f"dangerous sink {sink_name} receives signed size expression "
                             f"{signed_arg!r} with no obvious validation"
                         )
+
+            elif pattern == "toctou":
+                check_hit = sorted(callees & check_then_use_first)
+                use_hit = sorted(callees & check_then_use_second)
+                if check_hit and use_hit:
+                    import ida_funcs
+
+                    ea = _resolve_address(item["address"])
+                    func = ida_funcs.get_func(ea)
+                    if func is None:
+                        continue
+                    cfunc = decompile_cfunc(func)
+                    seq = query_ctree_call_sequences(
+                        cfunc,
+                        first_functions=check_then_use_first,
+                        second_functions=check_then_use_second,
+                        limit=3,
+                    )
+                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    if seq["pairs_found"] > 0:
+                        pair = seq["pairs"][0]
+                        match_detail = (
+                            f"TOCTOU: {pair['first_callee']}() then {pair['second_callee']}() "
+                            f"in same function (check-then-use race window)"
+                        )
+
+            elif pattern == "double_free":
+                free_hit = sorted(callees & free_like)
+                if free_hit:
+                    import ida_funcs
+
+                    ea = _resolve_address(item["address"])
+                    func = ida_funcs.get_func(ea)
+                    if func is None:
+                        continue
+                    cfunc = decompile_cfunc(func)
+                    seq = query_ctree_call_sequences(
+                        cfunc,
+                        first_functions=free_like,
+                        second_functions=free_like,
+                        shared_argument_index=0,
+                        limit=3,
+                    )
+                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    if seq["pairs_found"] > 0:
+                        pair = seq["pairs"][0]
+                        match_detail = (
+                            f"double free: {pair['first_callee']}() then {pair['second_callee']}() "
+                            f"on same pointer {pair['shared_arg']!r}"
+                        )
+
+            elif pattern == "use_after_free":
+                free_hit = sorted(callees & free_like)
+                use_sink_hit = sorted(callees & use_sinks)
+                if free_hit and use_sink_hit:
+                    import ida_funcs
+
+                    ea = _resolve_address(item["address"])
+                    func = ida_funcs.get_func(ea)
+                    if func is None:
+                        continue
+                    cfunc = decompile_cfunc(func)
+                    seq = query_ctree_call_sequences(
+                        cfunc,
+                        first_functions=free_like,
+                        second_functions=use_sinks,
+                        limit=3,
+                    )
+                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    if seq["pairs_found"] > 0:
+                        pair = seq["pairs"][0]
+                        match_detail = (
+                            f"use-after-free: {pair['first_callee']}() frees then "
+                            f"{pair['second_callee']}() uses in same function"
+                        )
+
+            elif pattern == "null_deref":
+                alloc_hit = sorted(callees & alloc_like)
+                if alloc_hit:
+                    import ida_funcs
+
+                    ea = _resolve_address(item["address"])
+                    func = ida_funcs.get_func(ea)
+                    if func is None:
+                        continue
+                    cfunc = decompile_cfunc(func)
+                    unchecked = query_ctree_unchecked_calls(
+                        cfunc,
+                        target_functions=alloc_like,
+                        limit=3,
+                    )
+                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    if unchecked["returned"] > 0:
+                        first = unchecked["matches"][0]
+                        match_detail = (
+                            f"unchecked allocation: {first['callee']}() result stored in "
+                            f"{first['variable']!r} with no NULL guard"
+                        )
+
+            elif pattern == "integer_overflow":
+                alloc_hit = sorted(callees & alloc_like)
+                if alloc_hit:
+                    import ida_funcs
+
+                    ea = _resolve_address(item["address"])
+                    func = ida_funcs.get_func(ea)
+                    if func is None:
+                        continue
+                    cfunc = decompile_cfunc(func)
+                    sink_name = alloc_hit[0]
+                    sink = query_ctree_calls(
+                        cfunc,
+                        target_function=sink_name,
+                        argument_index=0,
+                        contains_operation="mul",
+                        limit=3,
+                    )
+                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    if sink["returned"] > 0:
+                        first = sink["matches"][0]
+                        mul_expr = first["args_preview"][0] if first["arg_count"] > 0 else "<expr>"
+                        pseudo_lower = decomp["pseudocode"].lower()
+                        has_overflow_check = any(
+                            t in pseudo_lower for t in (
+                                "overflow", "/ item_size", "/ count", "0xffffffff /",
+                                "0xffff /", "size_max", "__builtin_mul_overflow",
+                            )
+                        )
+                        if not has_overflow_check:
+                            match_detail = (
+                                f"integer overflow: allocation size {mul_expr!r} contains "
+                                f"unchecked multiplication before {sink_name}()"
+                            )
+
             else:
                 raise ValueError(f"Unknown pattern_type: {pattern_type!r}")
 
