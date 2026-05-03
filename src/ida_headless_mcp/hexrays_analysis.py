@@ -74,6 +74,8 @@ def query_ctree_calls(
             callee_expr = _expr_preview(expr.x, cfunc)
             args = list(expr.a) if expr.a is not None else []
             args_preview = [_expr_preview(a, cfunc) for a in args]
+            arg_ops = [_op_const_to_name(getattr(a, 'op', None)) for a in args]
+            args_string_literal = [getattr(a, 'op', None) == ida_hexrays.cot_str for a in args]
             detail: str | None = None
             ok = True
             guarded_by_if = any(getattr(parent, 'op', None) == ida_hexrays.cit_if for parent in self.parents)
@@ -110,6 +112,8 @@ def query_ctree_calls(
                     "callee_expr": callee_expr,
                     "arg_count": len(args),
                     "args_preview": args_preview,
+                    "arg_ops": arg_ops,
+                    "args_string_literal": args_string_literal,
                     "guarded_by_if": guarded_by_if,
                     "matches_filters": ok,
                     "detail": detail,
@@ -352,6 +356,28 @@ def _op_name_to_const(name: str):
     if key not in mapping:
         raise ValueError(f"Unknown ctree operation name: {name!r}")
     return mapping[key]
+
+
+def _op_const_to_name(op: Any) -> str | None:
+    import ida_hexrays
+
+    mapping = {
+        ida_hexrays.cot_call: 'call',
+        ida_hexrays.cot_cast: 'cast',
+        ida_hexrays.cot_add: 'add',
+        ida_hexrays.cot_sub: 'sub',
+        ida_hexrays.cot_mul: 'mul',
+        ida_hexrays.cot_obj: 'obj',
+        ida_hexrays.cot_str: 'str',
+        ida_hexrays.cot_num: 'num',
+        ida_hexrays.cot_var: 'var',
+        ida_hexrays.cot_memref: 'memref',
+        ida_hexrays.cot_memptr: 'memptr',
+        ida_hexrays.cot_ptr: 'ptr',
+        ida_hexrays.cot_idx: 'idx',
+        ida_hexrays.cot_helper: 'helper',
+    }
+    return mapping.get(op)
 
 
 def _operand_type_matches(expr: Any, op_const: int | None, want: str) -> bool:
