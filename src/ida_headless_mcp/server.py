@@ -210,6 +210,23 @@ def diff_function(
     )
 
 @mcp.tool()
+def diff_survey(
+    binary_id_old: str,
+    binary_id_new: str,
+    max_changed: int = 20,
+    include_pseudocode_diff: bool = True,
+    max_diff_lines: int = 60,
+) -> dict:
+    """One-call N-day survey: structural diff + per-function diffs + security ranking."""
+    return _manager().diff_survey(
+        binary_id_old, binary_id_new,
+        max_changed=max_changed,
+        include_pseudocode_diff=include_pseudocode_diff,
+        max_diff_lines=max_diff_lines,
+    )
+
+
+@mcp.tool()
 def query_ctree(
     binary_id: str,
     address_or_name: str,
