@@ -1140,6 +1140,268 @@ class IDABinarySessionManager:
             ],
             "pattern_hits": pattern_hits,
         }
+    def classify_behavior(self, binary_id: str) -> dict[str, Any]:
+        """Map imported APIs to ATT&CK-aligned behavioral categories."""
+        self._activate(binary_id)
+        self._require(binary_id)  # validates binary_id is known
+        index = self._indices[binary_id]
+
+        # Collect all callees across user functions
+        all_callees: set[str] = set()
+        for e in index.entries:
+            if not e.is_thunk:
+                all_callees.update(c.lower() for c in e.callees)
+                all_callees.update(c[2:] for c in e.callees if c.lower().startswith('j_'))
+
+        categories = {
+            'c2_networking': {
+                'internetopenurla', 'internetopena', 'internetconnecta',
+                'httpsendrequesta', 'httpopenrequesta', 'internetreadfile',
+                'urldownloadtofile', 'wininet', 'winhttpopenrequest',
+                'wsastartup', 'socket', 'connect', 'send', 'recv',
+                'gethostbyname', 'getaddrinfo', 'dnsquery_a',
+            },
+            'persistence': {
+                'regsetvalueexa', 'regsetvaluew', 'regcreatekeyexa',
+                'createservicea', 'createservicew', 'changeserviceconfig2a',
+                'schtaskcreate', 'copyfile', 'copyfilea', 'movefileex',
+                'writeprocessmemory', 'setwindowshookexa',
+            },
+            'execution': {
+                'createprocessa', 'createprocessw', 'shellexecutea',
+                'shellexecuteexw', 'system', 'popen', 'winexec',
+                'createremotethread', 'ntcreatethreadex',
+                'virtualalloc', 'virtualallocex', 'virtualprotect',
+            },
+            'credential_access': {
+                'credssp', 'logonuser', 'lsaenumeratelogonsessions',
+                'cryptunprotectdata', 'credread', 'getpassword',
+                'mimikatz', 'sekurlsa', 'samdump',
+            },
+            'defense_evasion': {
+                'ntunmapviewofsection', 'zwunmapviewofsection',
+                'virtualprotect', 'virtualprotectex',
+                'setthreadcontext', 'ntsetinformationthread',
+                'deleteservice', 'deletefile', 'deletefilea',
+                'movefile', 'movefileexa', 'cryptencrypt',
+            },
+            'discovery': {
+                'getsysteminfo', 'getcomputername', 'getusername',
+                'getversionexa', 'getadaptersinfo',
+                'enumprocesses', 'process32first', 'process32next',
+                'createtoolhelp32snapshot', 'gettokeninformation',
+                'lookupaccountsid', 'netuserenum', 'netshareenum',
+            },
+            'exfiltration': {
+                'ftpputfile', 'internetwritefile', 'httpsendrequest',
+                'writefile', 'sendto', 'transmitfile',
+            },
+            'privilege_escalation': {
+                'adjusttokenprivileges', 'openprocesstoken',
+                'lookupprivilegevaluea', 'impersonateloggedonuser',
+                'setprivilegevalue', 'ntquerysysteminformation',
+            },
+        }
+
+        results: dict[str, list[str]] = {}
+        for category, apis in categories.items():
+            hits = sorted(all_callees & apis)
+            if hits:
+                results[category] = hits
+
+        return {
+            "binary_id": binary_id,
+            "categories_detected": len(results),
+            "behaviors": results,
+            "total_apis_matched": sum(len(v) for v in results.values()),
+        }
+
+    def detect_anti_analysis(self, binary_id: str) -> dict[str, Any]:
+        """Detect anti-debug, anti-VM, and anti-sandbox techniques."""
+        self._activate(binary_id)
+        index = self._indices[binary_id]
+
+        all_callees: set[str] = set()
+        all_strings: set[str] = set()
+        for e in index.entries:
+            if not e.is_thunk:
+                all_callees.update(c.lower() for c in e.callees)
+                all_callees.update(c[2:] for c in e.callees if c.lower().startswith('j_'))
+                all_strings.update(s.lower() for s in e.string_refs)
+
+        techniques: list[dict[str, Any]] = []
+
+        # Anti-debug APIs
+        anti_debug_apis = {
+            'isdebuggerpresent', 'checkremotedebuggerpresent',
+            'ntqueryinformationprocess', 'outputdebugstringa',
+            'closehandle',  # used with invalid handle for exception-based detection
+        }
+        hits = sorted(all_callees & anti_debug_apis)
+        if hits:
+            techniques.append({
+                'technique': 'anti_debug_api',
+                'evidence': hits,
+                'mitre': 'T1622',
+            })
+
+        # Anti-VM strings
+        vm_indicators = [
+            'vmware', 'virtualbox', 'vbox', 'qemu', 'xen',
+            'sandboxie', 'wine', 'virtual hd', 'hyper-v',
+            'parallels', 'bochs',
+        ]
+        vm_hits = [s for s in vm_indicators if any(s in st for st in all_strings)]
+        if vm_hits:
+            techniques.append({
+                'technique': 'vm_detection_strings',
+                'evidence': vm_hits,
+                'mitre': 'T1497.001',
+            })
+
+        # Timing-based detection APIs
+        timing_apis = {'gettickcount', 'gettickcount64', 'queryperformancecounter', 'rdtsc'}
+        timing_hits = sorted(all_callees & timing_apis)
+        if timing_hits:
+            techniques.append({
+                'technique': 'timing_check',
+                'evidence': timing_hits,
+                'mitre': 'T1497.003',
+            })
+
+        # Process enumeration (sandbox detection)
+        process_apis = {'createtoolhelp32snapshot', 'process32first', 'process32next', 'enumprocesses'}
+        proc_hits = sorted(all_callees & process_apis)
+        if proc_hits:
+            techniques.append({
+                'technique': 'process_enumeration',
+                'evidence': proc_hits,
+                'mitre': 'T1057',
+            })
+
+        return {
+            "binary_id": binary_id,
+            "techniques_detected": len(techniques),
+            "techniques": techniques,
+            "verdict": 'evasive' if len(techniques) >= 2 else ('suspicious' if techniques else 'clean'),
+        }
+
+    def entropy_analysis(self, binary_id: str) -> dict[str, Any]:
+        """Compute per-section Shannon entropy for packing/encryption detection."""
+        import math
+
+        self._activate(binary_id)
+        self._require(binary_id)
+
+        section_entropy: list[dict[str, Any]] = []
+        high_entropy_count = 0
+
+        import ida_bytes
+        import ida_segment
+        import idautils
+
+        for seg_ea in idautils.Segments():
+            seg = ida_segment.getseg(seg_ea)
+            if seg is None:
+                continue
+            name = ida_segment.get_segm_name(seg)
+            size = seg.size()
+            if size == 0:
+                continue
+
+            # Sample up to 64KB for entropy calculation
+            sample_size = min(size, 65536)
+            byte_counts = [0] * 256
+            for offset in range(sample_size):
+                b = ida_bytes.get_byte(seg.start_ea + offset)
+                byte_counts[b] += 1
+
+            entropy = 0.0
+            for count in byte_counts:
+                if count == 0:
+                    continue
+                p = count / sample_size
+                entropy -= p * math.log2(p)
+
+            is_high = entropy > 7.0
+            if is_high:
+                high_entropy_count += 1
+
+            section_entropy.append({
+                'name': name,
+                'start': f'0x{seg.start_ea:x}',
+                'size': size,
+                'entropy': round(entropy, 3),
+                'high_entropy': is_high,
+            })
+
+        return {
+            "binary_id": binary_id,
+            "sections": section_entropy,
+            "high_entropy_sections": high_entropy_count,
+            "verdict": 'likely_packed' if high_entropy_count >= 2 else (
+                'partially_encrypted' if high_entropy_count == 1 else 'normal'
+            ),
+        }
+
+    def suspicious_strings(self, binary_id: str, limit: int = 100) -> dict[str, Any]:
+        """Classify string references into malware-relevant categories."""
+        import re
+
+        self._activate(binary_id)
+        index = self._indices[binary_id]
+
+        all_strings: list[str] = []
+        for e in index.entries:
+            if not e.is_thunk and not e.is_library:
+                all_strings.extend(e.string_refs)
+        # Deduplicate
+        unique_strings = sorted(set(all_strings))
+
+        categories: dict[str, list[str]] = {
+            'urls': [],
+            'ip_addresses': [],
+            'registry_keys': [],
+            'file_paths': [],
+            'commands': [],
+            'crypto_constants': [],
+            'encoded_blobs': [],
+        }
+
+        url_re = re.compile(r'https?://', re.IGNORECASE)
+        ip_re = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')
+        reg_re = re.compile(r'(HKEY_|HKLM|HKCU|SOFTWARE\\\\|CurrentVersion)', re.IGNORECASE)
+        path_re = re.compile(r'(C:\\\\|%APPDATA%|%TEMP%|\\\\Windows\\\\|\\\\System32)', re.IGNORECASE)
+        cmd_re = re.compile(
+            r'(cmd\.exe|powershell|/c |net user|netsh|schtasks|reg add|wmic)', re.IGNORECASE
+        )
+        b64_re = re.compile(r'^[A-Za-z0-9+/]{20,}={0,2}$')
+
+        for s in unique_strings:
+            if url_re.search(s):
+                categories['urls'].append(s)
+            elif ip_re.search(s):
+                categories['ip_addresses'].append(s)
+            elif reg_re.search(s):
+                categories['registry_keys'].append(s)
+            elif path_re.search(s):
+                categories['file_paths'].append(s)
+            elif cmd_re.search(s):
+                categories['commands'].append(s)
+            elif b64_re.match(s) and len(s) > 30:
+                categories['encoded_blobs'].append(s)
+
+        # Truncate each category
+        for k in categories:
+            categories[k] = categories[k][:limit]
+
+        total = sum(len(v) for v in categories.values())
+        return {
+            "binary_id": binary_id,
+            "total_suspicious": total,
+            "categories": {k: v for k, v in categories.items() if v},
+        }
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
