@@ -288,6 +288,28 @@ def binary_survey(binary_id: str, max_hotspots: int = 10) -> dict:
     return _manager().binary_survey(binary_id, max_hotspots=max_hotspots)
 
 
+@mcp.tool()
+def def_use(
+    binary_id: str,
+    address_or_name: str,
+    target_callee: str = "",
+    max_instructions: int = 200,
+) -> dict:
+    """Microcode-level use/def chain analysis. Shows what each instruction reads and writes."""
+    return _manager().def_use(
+        binary_id,
+        address_or_name,
+        target_callee=target_callee,
+        max_instructions=max_instructions,
+    )
+
+
+
+@mcp.tool()
+def value_ranges(binary_id: str, address_or_name: str) -> dict:
+    """IR-backed value-range annotations from the decompiler's microcode analysis."""
+    return _manager().value_ranges(binary_id, address_or_name)
+
 
 def create_server() -> FastMCP:
     return mcp
