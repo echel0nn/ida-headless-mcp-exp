@@ -105,21 +105,40 @@ class IDABinarySessionManager:
             self._touch_manifest(sha256, record.root_filename, record.function_count)
             return record
 
+        # Persistent workspace: copy binary so IDA's .i64 database persists
+        workspace = self._workspace_path(sha256)
+        workspace_binary = workspace / target.name
+        if not workspace_binary.exists():
+            import shutil
+            workspace.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, workspace_binary)
+
         if self._active_binary_id is not None:
             self._ida.close_database(False)
             self._records[self._active_binary_id].active = False
 
-        self._open_database(target)
-        record = self._collect_metadata(binary_id=binary_id, path=target, sha256=sha256, size_bytes=size_bytes)
+        self._open_database(workspace_binary)
+        record = self._collect_metadata(
+            binary_id=binary_id, path=target, sha256=sha256, size_bytes=size_bytes,
+        )
         self._records[binary_id] = record
-        self._indices[binary_id] = self._load_or_build_index(sha256)
         self._active_binary_id = binary_id
+
+        # Load cached index instantly. If no cache, defer build to first tool
+        # call that needs it (search_pattern, list_functions, etc.).
+        index_path = self._index_cache_path(sha256)
+        if index_path.exists():
+            self._indices[binary_id] = FunctionIndex.load(index_path)
+        # else: _ensure_indexed() will build it on demand
+
         self._touch_manifest(sha256, record.root_filename, record.function_count)
         return record
 
     def close_binary(self, binary_id: str, save: bool = False) -> dict[str, Any]:
         if self._active_binary_id == binary_id:
-            self._ida.close_database(save)
+            # Always save the .i64 so warm reopens work (0.5s vs 17s).
+            # The `save` param controls whether user annotations persist.
+            self._ida.close_database(True)
             self._active_binary_id = None
         del self._records[binary_id]
         self._indices.pop(binary_id, None)
@@ -174,6 +193,7 @@ class IDABinarySessionManager:
         exclude_libraries: bool = False,
     ) -> dict[str, Any]:
         self._activate(binary_id)
+        self._ensure_indexed(binary_id)
         index = self._indices[binary_id]
         result = index.query(
             name_pattern=filter_text,
@@ -453,6 +473,7 @@ class IDABinarySessionManager:
         max_lines: int = 250,
     ) -> dict[str, Any]:
         self._activate(binary_id)
+        self._ensure_indexed(binary_id)
         result = self._indices[binary_id].query(
             name_pattern=name_pattern,
             callers_of=callers_of,
@@ -501,6 +522,7 @@ class IDABinarySessionManager:
             cache_path = self._pattern_cache_path(rec.sha256, pattern)
             if cache_path.exists():
                 return json.loads(cache_path.read_text(encoding='utf-8'))
+        self._ensure_indexed(binary_id)
         query = self._indices[binary_id].query(
             name_pattern=name_pattern,
             exclude_thunks=True,
@@ -1075,6 +1097,7 @@ class IDABinarySessionManager:
         """One-call orientation: metadata + attack surface + hotspots + pattern hits."""
         self._activate(binary_id)
         rec = self._require(binary_id)
+        self._ensure_indexed(binary_id)
         index = self._indices[binary_id]
 
         # Attack surface: dangerous and network-related imports
@@ -1142,6 +1165,7 @@ class IDABinarySessionManager:
         """Map imported APIs to ATT&CK-aligned behavioral categories."""
         self._activate(binary_id)
         self._require(binary_id)  # validates binary_id is known
+        self._ensure_indexed(binary_id)
         index = self._indices[binary_id]
 
         # Collect all callees across user functions
@@ -1558,21 +1582,41 @@ class IDABinarySessionManager:
             return
         rec = self._require(binary_id)
         if self._active_binary_id is not None:
-            self._ida.close_database(False)
+            self._ida.close_database(True)  # save .i64 for fast reopen
             self._records[self._active_binary_id].active = False
-        self._open_database(rec.path)
+        # Use workspace copy where the .i64 database lives
+        workspace_binary = self._workspace_path(rec.sha256) / rec.path.name
+        if workspace_binary.exists():
+            self._open_database(workspace_binary)
+        else:
+            self._open_database(rec.path)
         self._active_binary_id = binary_id
         if binary_id not in self._indices:
             self._indices[binary_id] = self._load_or_build_index(rec.sha256)
         rec.active = True
 
     def _open_database(self, path: Path) -> None:
-        import ida_auto
-
         rc = self._ida.open_database(str(path), True)
         if rc != 0:
             raise RuntimeError(f"open_database failed for {path} with code {rc}")
-        ida_auto.auto_wait()
+        # Do NOT call auto_wait() here — it blocks for minutes on large binaries.
+        # IDA can decompile individual functions while analysis is still running.
+        # The background analysis fills in xrefs, FLIRT sigs, and type info over time.
+        # Tools that need full analysis call _ensure_analysis() on demand.
+
+    def _ensure_analysis(self) -> None:
+        """Block until auto-analysis is complete. Call only when full index is needed."""
+        import ida_auto
+        if not ida_auto.auto_is_ok():
+            ida_auto.auto_wait()
+
+    def _ensure_indexed(self, binary_id: str) -> None:
+        """Ensure the function index exists for this binary. Blocks on analysis if needed."""
+        if binary_id in self._indices:
+            return
+        self._ensure_analysis()
+        rec = self._require(binary_id)
+        self._indices[binary_id] = self._load_or_build_index(rec.sha256)
 
     def _collect_metadata(self, *, binary_id: str, path: Path, sha256: str, size_bytes: int) -> BinaryRecord:
         import ida_funcs
@@ -1637,6 +1681,9 @@ class IDABinarySessionManager:
 
     def _index_cache_path(self, sha256: str) -> Path:
         return self.settings.cache_dir / sha256 / "index.json"
+
+    def _workspace_path(self, sha256: str) -> Path:
+        return self.settings.cache_dir / sha256 / "workspace"
 
     def _pattern_cache_path(self, sha256: str, pattern_type: str) -> Path:
         return self.settings.cache_dir / sha256 / "patterns" / f"{pattern_type}_v1.json"
