@@ -1,55 +1,88 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from .config import load_settings
-from .session import IDABinarySessionManager
 
 __all__ = ["create_server", "main"]
 
 mcp = FastMCP("IDA Headless MCP", json_response=True)
 
+_pool_mode = os.environ.get("IDA_HEADLESS_MCP_POOL", "").strip().lower() in ("1", "true", "yes")
+
+
+class _Backend:
+    """Unified backend — routes to either in-process manager or worker pool."""
+
+    def __init__(self) -> None:
+        settings = load_settings()
+        if _pool_mode or settings.max_concurrent_ida > 1:
+            from .pool import WorkerPool
+            self._pool: Any = WorkerPool(settings)
+            self._mgr = None
+        else:
+            from .session import IDABinarySessionManager
+            self._mgr = IDABinarySessionManager(settings)
+            self._pool = None
+
+    def call(self, method: str, params: dict) -> Any:
+        if self._pool is not None:
+            return self._pool.call(method, params)
+        from .worker import _dispatch
+        return _dispatch(self._mgr, method, params)
+
+    def __getattr__(self, name: str):
+        """Proxy attribute access to .call() for tool compatibility."""
+        if self._mgr is not None:
+            # Direct mode: call the method on the manager directly
+            return getattr(self._mgr, name)
+        # Pool mode: serialize args into params dict for the worker
+        import inspect
+
+        from .session import IDABinarySessionManager
+        method = getattr(IDABinarySessionManager, name, None)
+        if method is None:
+            raise AttributeError(name)
+        sig = inspect.signature(method)
+        def _proxy(*args, **kwargs):
+            bound = sig.bind(None, *args, **kwargs)  # None for self
+            bound.apply_defaults()
+            params = dict(bound.arguments)
+            params.pop('self', None)
+            return self.call(name, params)
+        return _proxy
+
 
 @lru_cache(maxsize=1)
-def _manager() -> IDABinarySessionManager:
-    settings = load_settings()
-    return IDABinarySessionManager(settings)
-
+def _backend() -> _Backend:
+    return _Backend()
 
 @mcp.tool()
 def open_binary(path: str) -> dict:
-    """Open a binary in IDA headless and return metadata.
-
-    Args:
-        path: Absolute or relative path to a binary file.
-    """
-    rec = _manager().open_binary(path)
-    return _manager().binary_metadata(rec.binary_id)
+    """Open a binary in IDA headless and return metadata."""
+    return _backend().call("open_binary", {"path": path})
 
 
 @mcp.tool()
 def close_binary(binary_id: str, save: bool = False) -> dict:
-    """Close a previously opened binary.
-
-    Args:
-        binary_id: Opaque handle returned by open_binary.
-        save: When True, persist database changes before closing.
-    """
-    return _manager().close_binary(binary_id, save=save)
+    """Close a previously opened binary."""
+    return _backend().call("close_binary", {"binary_id": binary_id, "save": save})
 
 
 @mcp.tool()
-def list_binaries() -> list[dict]:
+def list_binaries() -> dict:
     """List currently registered binary sessions."""
-    return _manager().list_binaries()
+    return _backend().call("list_binaries", {})
 
 
 @mcp.tool()
 def binary_metadata(binary_id: str) -> dict:
     """Return metadata for an opened binary."""
-    return _manager().binary_metadata(binary_id)
+    return _backend().call("binary_metadata", {"binary_id": binary_id})
 
 
 @mcp.tool()
@@ -65,7 +98,7 @@ def list_functions(
     exclude_libraries: bool = False,
  ) -> dict:
     """List functions in a binary with optional structured filtering."""
-    return _manager().list_functions(
+    return _backend().list_functions(
         binary_id,
         offset=offset,
         limit=limit,
@@ -81,55 +114,55 @@ def list_functions(
 @mcp.tool()
 def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dict:
     """Decompile a function by address or name."""
-    return _manager().decompile(binary_id, address_or_name, max_lines=max_lines)
+    return _backend().decompile(binary_id, address_or_name, max_lines=max_lines)
 
 
 @mcp.tool()
 def xrefs_to(binary_id: str, address_or_name: str) -> dict:
     """Return cross-references to an address or symbol."""
-    return _manager().xrefs_to(binary_id, address_or_name)
+    return _backend().xrefs_to(binary_id, address_or_name)
 
 
 @mcp.tool()
 def xrefs_from(binary_id: str, address_or_name: str) -> dict:
     """Return cross-references from a function."""
-    return _manager().xrefs_from(binary_id, address_or_name)
+    return _backend().xrefs_from(binary_id, address_or_name)
 
 
 @mcp.tool()
 def imports(binary_id: str) -> dict:
     """List imports for the binary."""
-    return _manager().imports(binary_id)
+    return _backend().imports(binary_id)
 
 
 @mcp.tool()
 def exports(binary_id: str) -> dict:
     """List exports for the binary."""
-    return _manager().exports(binary_id)
+    return _backend().exports(binary_id)
 
 
 @mcp.tool()
 def segments(binary_id: str) -> dict:
     """List segments for the binary."""
-    return _manager().segments(binary_id)
+    return _backend().segments(binary_id)
 
 
 @mcp.tool()
 def checksec(binary_id: str) -> dict:
     """Return binary mitigation summary."""
-    return _manager().checksec(binary_id)
+    return _backend().checksec(binary_id)
 
 
 @mcp.tool()
 def stack_frame(binary_id: str, address_or_name: str) -> dict:
     """Return stack frame sizing information for a function."""
-    return _manager().stack_frame(binary_id, address_or_name)
+    return _backend().stack_frame(binary_id, address_or_name)
 
 
 @mcp.tool()
 def call_graph(binary_id: str, address_or_name: str, depth: int = 2, direction: str = "both") -> dict:
     """Return a bounded call graph rooted at the requested function."""
-    return _manager().call_graph(binary_id, address_or_name, depth=depth, direction=direction)
+    return _backend().call_graph(binary_id, address_or_name, depth=depth, direction=direction)
 
 @mcp.tool()
 def batch_decompile(
@@ -150,7 +183,7 @@ def batch_decompile(
     max_lines: int = 250,
 ) -> dict:
     """Decompile multiple functions selected by structured filters."""
-    return _manager().batch_decompile(
+    return _backend().batch_decompile(
         binary_id,
         name_pattern=name_pattern,
         callers_of=callers_of,
@@ -178,7 +211,7 @@ def search_pattern(
     max_lines: int = 120,
 ) -> dict:
     """Search for deterministic vulnerability patterns across indexed functions."""
-    return _manager().search_pattern(
+    return _backend().search_pattern(
         binary_id,
         pattern_type,
         name_pattern=name_pattern,
@@ -189,7 +222,7 @@ def search_pattern(
 @mcp.tool()
 def diff_binary(binary_id_old: str, binary_id_new: str) -> dict:
     """Diff two analyzed binaries structurally by function metadata."""
-    return _manager().diff_binary(binary_id_old, binary_id_new)
+    return _backend().diff_binary(binary_id_old, binary_id_new)
 
 
 @mcp.tool()
@@ -201,7 +234,7 @@ def diff_function(
     max_lines: int = 500,
 ) -> dict:
     """Diff two functions using side-by-side pseudocode and unified diff."""
-    return _manager().diff_function(
+    return _backend().diff_function(
         binary_id_old,
         address_or_name_old,
         binary_id_new,
@@ -218,7 +251,7 @@ def diff_survey(
     max_diff_lines: int = 60,
 ) -> dict:
     """One-call N-day survey: structural diff + per-function diffs + security ranking."""
-    return _manager().diff_survey(
+    return _backend().diff_survey(
         binary_id_old, binary_id_new,
         max_changed=max_changed,
         include_pseudocode_diff=include_pseudocode_diff,
@@ -237,7 +270,7 @@ def query_ctree(
     limit: int = 50,
 ) -> dict:
     """Query the decompiler CTree for call expressions matching structural predicates."""
-    return _manager().query_ctree(
+    return _backend().query_ctree(
         binary_id,
         address_or_name,
         target_function=target_function,
@@ -251,7 +284,7 @@ def query_ctree(
 @mcp.tool()
 def get_microcode(binary_id: str, address_or_name: str, maturity: str = "current") -> dict:
     """Return textual Hex-Rays microcode for a function at the requested maturity level."""
-    return _manager().get_microcode(binary_id, address_or_name, maturity=maturity)
+    return _backend().get_microcode(binary_id, address_or_name, maturity=maturity)
 
 @mcp.tool()
 def trace_dataflow(
@@ -263,7 +296,7 @@ def trace_dataflow(
     max_steps: int = 10,
 ) -> dict:
     """Trace a sink argument backward through local assignment hops to a source term."""
-    return _manager().trace_dataflow(
+    return _backend().trace_dataflow(
         binary_id,
         address_or_name,
         sink_function=sink_function,
@@ -276,7 +309,7 @@ def trace_dataflow(
 @mcp.tool()
 def hexrays_warnings(binary_id: str, address_or_name: str) -> dict:
     """Return Hex-Rays decompiler warnings for a function (confidence signals)."""
-    return _manager().hexrays_warnings(binary_id, address_or_name)
+    return _backend().hexrays_warnings(binary_id, address_or_name)
 
 
 @mcp.tool()
@@ -289,7 +322,7 @@ def pseudocode_slice_view(
     max_slices: int = 10,
 ) -> dict:
     """Return focused pseudocode slices around specific call sites or addresses."""
-    return _manager().pseudocode_slice_fn(
+    return _backend().pseudocode_slice_fn(
         binary_id,
         address_or_name,
         focus_callee=focus_callee,
@@ -302,7 +335,7 @@ def pseudocode_slice_view(
 @mcp.tool()
 def binary_survey(binary_id: str, max_hotspots: int = 10) -> dict:
     """One-call binary orientation: metadata, attack surface, hotspots, cached pattern hits."""
-    return _manager().binary_survey(binary_id, max_hotspots=max_hotspots)
+    return _backend().binary_survey(binary_id, max_hotspots=max_hotspots)
 
 
 @mcp.tool()
@@ -313,7 +346,7 @@ def def_use(
     max_instructions: int = 200,
 ) -> dict:
     """Microcode-level use/def chain analysis. Shows what each instruction reads and writes."""
-    return _manager().def_use(
+    return _backend().def_use(
         binary_id,
         address_or_name,
         target_callee=target_callee,
@@ -325,32 +358,32 @@ def def_use(
 @mcp.tool()
 def value_ranges(binary_id: str, address_or_name: str) -> dict:
     """IR-backed value-range annotations from the decompiler's microcode analysis."""
-    return _manager().value_ranges(binary_id, address_or_name)
+    return _backend().value_ranges(binary_id, address_or_name)
 
 
 
 @mcp.tool()
 def classify_behavior(binary_id: str) -> dict:
     """Map imported APIs to ATT&CK-aligned behavioral categories (C2, persistence, execution, etc)."""
-    return _manager().classify_behavior(binary_id)
+    return _backend().classify_behavior(binary_id)
 
 
 @mcp.tool()
 def detect_anti_analysis(binary_id: str) -> dict:
     """Detect anti-debug, anti-VM, and anti-sandbox techniques."""
-    return _manager().detect_anti_analysis(binary_id)
+    return _backend().detect_anti_analysis(binary_id)
 
 
 @mcp.tool()
 def entropy_analysis(binary_id: str) -> dict:
     """Per-section Shannon entropy for packing/encryption detection."""
-    return _manager().entropy_analysis(binary_id)
+    return _backend().entropy_analysis(binary_id)
 
 
 @mcp.tool()
 def classify_strings(binary_id: str, limit: int = 200) -> dict:
     """Classify string references by format: URLs, IPs, registry paths, file paths, base64."""
-    return _manager().classify_strings(binary_id, limit=limit)
+    return _backend().classify_strings(binary_id, limit=limit)
 
 
 
@@ -363,7 +396,7 @@ def path_feasibility(
     max_steps: int = 200000,
 ) -> dict:
     """Check if a path from source to sink is feasible using angr symbolic execution."""
-    return _manager().path_feasibility(
+    return _backend().path_feasibility(
         binary_id, source_address, sink_address,
         timeout_seconds=timeout_seconds, max_steps=max_steps,
     )
@@ -379,7 +412,7 @@ def find_paths(
     max_paths: int = 3,
 ) -> dict:
     """Find execution paths between two points using angr exploration."""
-    return _manager().find_paths(
+    return _backend().find_paths(
         binary_id, from_address, to_address,
         avoid_addresses=avoid_addresses,
         timeout_seconds=timeout_seconds, max_paths=max_paths,
