@@ -1342,8 +1342,12 @@ class IDABinarySessionManager:
             ),
         }
 
-    def suspicious_strings(self, binary_id: str, limit: int = 100) -> dict[str, Any]:
-        """Classify string references into malware-relevant categories."""
+    def classify_strings(self, binary_id: str, limit: int = 200) -> dict[str, Any]:
+        """Structurally classify string references by format.
+
+        Returns factual categorization — no suspicion scoring.
+        The consumer decides what matters.
+        """
         import re
 
         self._activate(binary_id)
@@ -1353,50 +1357,44 @@ class IDABinarySessionManager:
         for e in index.entries:
             if not e.is_thunk and not e.is_library:
                 all_strings.extend(e.string_refs)
-        # Deduplicate
         unique_strings = sorted(set(all_strings))
+
+        url_re = re.compile(r'https?://\S+', re.IGNORECASE)
+        ip_re = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$')
+        reg_re = re.compile(r'^(HKEY_|HKLM\\|HKCU\\|SOFTWARE\\)', re.IGNORECASE)
+        path_re = re.compile(
+            r'^([A-Za-z]:\\|\\\\|/usr/|/etc/|/tmp/|%[A-Z]+%)', re.IGNORECASE
+        )
+        b64_re = re.compile(r'^[A-Za-z0-9+/]{40,}={0,2}$')
 
         categories: dict[str, list[str]] = {
             'urls': [],
             'ip_addresses': [],
-            'registry_keys': [],
+            'registry_paths': [],
             'file_paths': [],
-            'commands': [],
-            'crypto_constants': [],
-            'encoded_blobs': [],
+            'base64_candidates': [],
         }
-
-        url_re = re.compile(r'https?://', re.IGNORECASE)
-        ip_re = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')
-        reg_re = re.compile(r'(HKEY_|HKLM|HKCU|SOFTWARE\\\\|CurrentVersion)', re.IGNORECASE)
-        path_re = re.compile(r'(C:\\\\|%APPDATA%|%TEMP%|\\\\Windows\\\\|\\\\System32)', re.IGNORECASE)
-        cmd_re = re.compile(
-            r'(cmd\.exe|powershell|/c |net user|netsh|schtasks|reg add|wmic)', re.IGNORECASE
-        )
-        b64_re = re.compile(r'^[A-Za-z0-9+/]{20,}={0,2}$')
 
         for s in unique_strings:
             if url_re.search(s):
                 categories['urls'].append(s)
-            elif ip_re.search(s):
+            elif ip_re.match(s):
                 categories['ip_addresses'].append(s)
-            elif reg_re.search(s):
-                categories['registry_keys'].append(s)
-            elif path_re.search(s):
+            elif reg_re.match(s):
+                categories['registry_paths'].append(s)
+            elif path_re.match(s):
                 categories['file_paths'].append(s)
-            elif cmd_re.search(s):
-                categories['commands'].append(s)
-            elif b64_re.match(s) and len(s) > 30:
-                categories['encoded_blobs'].append(s)
+            elif b64_re.match(s):
+                categories['base64_candidates'].append(s)
 
-        # Truncate each category
         for k in categories:
             categories[k] = categories[k][:limit]
 
         total = sum(len(v) for v in categories.values())
         return {
             "binary_id": binary_id,
-            "total_suspicious": total,
+            "unique_strings_total": len(unique_strings),
+            "classified_total": total,
             "categories": {k: v for k, v in categories.items() if v},
         }
 
