@@ -74,8 +74,8 @@ class IDABinarySessionManager:
             pass
         self._records: dict[str, BinaryRecord] = {}
         self._active_binary_id: str | None = None
-        self._request_log_path = self.settings.project_dir / "request_log.jsonl"
         self._indices: dict[str, FunctionIndex] = {}
+        self._manifest_path = self.settings.cache_dir / "manifest.json"
 
     # ------------------------------------------------------------------
     # Public API
@@ -98,7 +98,7 @@ class IDABinarySessionManager:
             self._activate(binary_id)
             record = self._records[binary_id]
             record.active = True
-            self._write_request_log("open_binary", {"path": str(target)}, {"binary_id": binary_id, "cached": True})
+            self._touch_manifest(sha256, record.root_filename, record.function_count)
             return record
 
         if self._active_binary_id is not None:
@@ -108,9 +108,9 @@ class IDABinarySessionManager:
         self._open_database(target)
         record = self._collect_metadata(binary_id=binary_id, path=target, sha256=sha256, size_bytes=size_bytes)
         self._records[binary_id] = record
-        self._indices[binary_id] = build_function_index()
+        self._indices[binary_id] = self._load_or_build_index(sha256)
         self._active_binary_id = binary_id
-        self._write_request_log("open_binary", {"path": str(target)}, {"binary_id": binary_id, "cached": False})
+        self._touch_manifest(sha256, record.root_filename, record.function_count)
         return record
 
     def close_binary(self, binary_id: str, save: bool = False) -> dict[str, Any]:
@@ -119,7 +119,6 @@ class IDABinarySessionManager:
             self._active_binary_id = None
         del self._records[binary_id]
         self._indices.pop(binary_id, None)
-        self._write_request_log("close_binary", {"binary_id": binary_id, "save": save}, {"closed": True})
         return {"binary_id": binary_id, "closed": True}
 
     def list_binaries(self) -> list[dict[str, Any]]:
@@ -182,21 +181,7 @@ class IDABinarySessionManager:
             offset=offset,
             limit=limit,
         )
-        self._write_request_log(
-            "list_functions",
-            {
-                "binary_id": binary_id,
-                "offset": offset,
-                "limit": limit,
-                "filter": filter_text,
-                "order_by": order_by,
-                "min_size_bytes": min_size_bytes,
-                "min_complexity": min_complexity,
-                "exclude_thunks": exclude_thunks,
-                "exclude_libraries": exclude_libraries,
-            },
-            {"total": result["total"], "returned": len(result["functions"] )},
-        )
+
         return result
 
     def decompile(self, binary_id: str, address_or_name: str, max_lines: int = 500) -> dict[str, Any]:
@@ -239,11 +224,7 @@ class IDABinarySessionManager:
         }
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
-        self._write_request_log(
-            "decompile",
-            {"binary_id": binary_id, "target": address_or_name},
-            {"address": result["address"], "cache_hit": False},
-        )
+
         return result
 
     def xrefs_to(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
@@ -497,19 +478,7 @@ class IDABinarySessionManager:
             "drop_reason": "max_results" if result["total"] > offset + len(decompiled) else None,
             "results": decompiled,
         }
-        self._write_request_log(
-            "batch_decompile",
-            {
-                "binary_id": binary_id,
-                "name_pattern": name_pattern,
-                "callers_of": callers_of or [],
-                "called_by": called_by or [],
-                "order_by": order_by,
-                "offset": offset,
-                "limit": limit,
-            },
-            {"matched_total": result["total"], "returned": len(decompiled)},
-        )
+
         return payload
 
     def search_pattern(
@@ -849,11 +818,7 @@ class IDABinarySessionManager:
             "count": len(matches),
             "matches": matches,
         }
-        self._write_request_log(
-            "search_pattern",
-            {"binary_id": binary_id, "pattern_type": pattern_type, "name_pattern": name_pattern, "limit": limit},
-            {"count": len(matches)},
-        )
+
         return payload
 
     def diff_binary(self, binary_id_old: str, binary_id_new: str) -> dict[str, Any]:
@@ -863,11 +828,7 @@ class IDABinarySessionManager:
         new_entries = self._indices[binary_id_new].entries
         payload = diff_binary_indexes(old_entries, new_entries)
         payload.update({"binary_id_old": binary_id_old, "binary_id_new": binary_id_new})
-        self._write_request_log(
-            "diff_binary",
-            {"binary_id_old": binary_id_old, "binary_id_new": binary_id_new},
-            payload["summary"],
-        )
+
         return payload
 
     def diff_function(
@@ -885,16 +846,7 @@ class IDABinarySessionManager:
             "binary_id_old": binary_id_old,
             "binary_id_new": binary_id_new,
         })
-        self._write_request_log(
-            "diff_function",
-            {
-                "binary_id_old": binary_id_old,
-                "address_or_name_old": address_or_name_old,
-                "binary_id_new": binary_id_new,
-                "address_or_name_new": address_or_name_new,
-            },
-            {"summary_signal": payload["summary_signal"]},
-        )
+
         return payload
 
     def query_ctree(
@@ -925,19 +877,7 @@ class IDABinarySessionManager:
             limit=limit,
         )
         payload["binary_id"] = binary_id
-        self._write_request_log(
-            "query_ctree",
-            {
-                "binary_id": binary_id,
-                "target": address_or_name,
-                "target_function": target_function,
-                "argument_index": argument_index,
-                "contains_operation": contains_operation,
-                "operand_type_is": operand_type_is,
-                "limit": limit,
-            },
-            {"returned": payload["returned"], "scanned_calls": payload["scanned_calls"]},
-        )
+
         return payload
 
     def get_microcode(
@@ -957,11 +897,7 @@ class IDABinarySessionManager:
         cfunc = decompile_cfunc(func)
         payload = get_microcode_text(cfunc, maturity=maturity)
         payload["binary_id"] = binary_id
-        self._write_request_log(
-            "get_microcode",
-            {"binary_id": binary_id, "target": address_or_name, "maturity": maturity},
-            {"maturity": payload["maturity"], "line_count": payload["line_count"]},
-        )
+
         return payload
 
     def trace_dataflow(
@@ -990,22 +926,7 @@ class IDABinarySessionManager:
             max_steps=max_steps,
         )
         payload["binary_id"] = binary_id
-        self._write_request_log(
-            "trace_dataflow",
-            {
-                "binary_id": binary_id,
-                "target": address_or_name,
-                "sink_function": sink_function,
-                "sink_argument_index": sink_argument_index,
-                "source_contains": source_contains or [],
-                "max_steps": max_steps,
-            },
-            {
-                "sink_found": payload["sink_found"],
-                "source_hit": payload["source_hit"],
-                "chain_len": len(payload["chain"]),
-            }
-        )
+
         return payload
 
     # ------------------------------------------------------------------
@@ -1028,7 +949,7 @@ class IDABinarySessionManager:
         self._open_database(rec.path)
         self._active_binary_id = binary_id
         if binary_id not in self._indices:
-            self._indices[binary_id] = build_function_index()
+            self._indices[binary_id] = self._load_or_build_index(rec.sha256)
         rec.active = True
 
     def _open_database(self, path: Path) -> None:
@@ -1100,11 +1021,54 @@ class IDABinarySessionManager:
         safe = address_or_name.replace("/", "_").replace("\\", "_").replace(":", "_")
         return self.settings.cache_dir / sha256 / "decompile" / f"{safe}.json"
 
-    def _write_request_log(self, command: str, args: dict[str, Any], summary: dict[str, Any]) -> None:
-        entry = {"command": command, "args": args, "summary": summary}
-        self._request_log_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._request_log_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
+    def _index_cache_path(self, sha256: str) -> Path:
+        return self.settings.cache_dir / sha256 / "index.json"
+
+    def _load_or_build_index(self, sha256: str) -> FunctionIndex:
+        index_path = self._index_cache_path(sha256)
+        if index_path.exists():
+            return FunctionIndex.load(index_path)
+        index = build_function_index()
+        index.save(index_path)
+        return index
+
+    def _touch_manifest(self, sha256: str, root_filename: str, function_count: int) -> None:
+        import time
+
+        manifest: dict[str, Any] = {}
+        if self._manifest_path.exists():
+            try:
+                manifest = json.loads(self._manifest_path.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError):
+                pass
+        manifest[sha256] = {
+            "last_accessed": time.time(),
+            "root_filename": root_filename,
+            "function_count": function_count,
+        }
+        self._manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+
+    def evict_lru(self, keep_n: int = 50) -> list[str]:
+        """Remove cache for least-recently-used binaries beyond *keep_n*.
+
+        Returns list of evicted SHA256 prefixes.
+        """
+        import shutil
+
+        if not self._manifest_path.exists():
+            return []
+        manifest: dict[str, Any] = json.loads(self._manifest_path.read_text(encoding='utf-8'))
+        by_time = sorted(manifest.items(), key=lambda kv: kv[1].get('last_accessed', 0))
+        evicted: list[str] = []
+        for sha, _meta in by_time[:-keep_n] if len(by_time) > keep_n else []:
+            target = self.settings.cache_dir / sha
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            del manifest[sha]
+            evicted.append(sha)
+        if evicted:
+            self._manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+        return evicted
 
 
 def _sha256_file(path: Path) -> str:

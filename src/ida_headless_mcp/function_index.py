@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 __all__ = [
@@ -26,6 +28,32 @@ class FunctionIndexEntry:
 @dataclass(slots=True)
 class FunctionIndex:
     entries: list[FunctionIndexEntry]
+
+    def save(self, path: Path) -> None:
+        """Persist index to a JSON file."""
+        data = [_entry_to_json(e) for e in self.entries]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, separators=(',', ':')), encoding='utf-8')
+
+    @classmethod
+    def load(cls, path: Path) -> FunctionIndex:
+        """Load index from a JSON file written by save()."""
+        raw = json.loads(path.read_text(encoding='utf-8'))
+        entries = [
+            FunctionIndexEntry(
+                address=int(r['address'], 16),
+                name=r['name'],
+                size_bytes=r['size_bytes'],
+                cyclomatic_complexity=r['cyclomatic_complexity'],
+                is_thunk=r['is_thunk'],
+                is_library=r['is_library'],
+                callers=tuple(r['callers']),
+                callees=tuple(r['callees']),
+                string_refs=tuple(r['string_refs']),
+            )
+            for r in raw
+        ]
+        return cls(entries=entries)
 
     def query(
         self,
