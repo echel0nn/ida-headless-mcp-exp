@@ -99,83 +99,91 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
     patterns_dir = sha_dir / "patterns"
     patterns_dir.mkdir(parents=True, exist_ok=True)
+    write_results_dir = sha_dir / "write_results"
+    write_results_dir.mkdir(parents=True, exist_ok=True)
+    write_queue_path = sha_dir / "write_queue.jsonl"
 
+    from ida_headless_mcp.mutations import Generation
+
+    gen = Generation(sha_dir)
     last_activity = time.monotonic()
 
     while True:
-        # Check idle timeout
         if time.monotonic() - last_activity > idle_timeout:
             break
 
-        # Read queue
-        if not queue_path.exists():
-            time.sleep(POLL_INTERVAL)
-            continue
-
-        try:
-            raw = queue_path.read_text(encoding="utf-8").strip()
-            if raw:
-                queue_path.write_text("", encoding="utf-8")  # consume
-            else:
-                time.sleep(POLL_INTERVAL)
-                continue
-        except OSError:
-            time.sleep(POLL_INTERVAL)
-            continue
-
-        for line in raw.splitlines():
-            try:
-                req = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            req_type = req.get("type", "")
+        processed = False
+        processed |= _consume_queue(
+            write_queue_path,
+            lambda req: _handle_mutation(req, sha_dir, gen, write_results_dir, decompile_dir),
+        )
+        processed |= _consume_queue(
+            queue_path,
+            lambda req: _dispatch_request(
+                req, sha_dir, decompile_dir, patterns_dir, results_dir, gen,
+            ),
+        )
+        if processed:
             last_activity = time.monotonic()
-
-            if req_type == "decompile":
-                _handle_decompile(req, sha_dir, decompile_dir)
-            elif req_type == "search_pattern":
-                _handle_search_pattern(req, sha_dir, patterns_dir)
-            elif req_type in ("imports", "exports", "xrefs_to", "xrefs_from",
-                              "classify_behavior", "detect_anti_analysis",
-                              "entropy_analysis", "binary_survey"):
-                _handle_generic(req, sha_dir, results_dir)
-
-    # Clean shutdown
-    ida_mod.close_database(True)
-    _update_state(sha_dir, state="READY", worker_pid=None)
+        else:
+            time.sleep(POLL_INTERVAL)
 
 
-def _handle_decompile(req: dict, sha_dir: Path, decompile_dir: Path) -> None:
-    """Decompile one function, write to cache."""
+def _consume_queue(queue_path: Path, handler) -> bool:
+    """Read and consume a JSONL queue, calling handler per entry."""
+    if not queue_path.exists():
+        return False
+    try:
+        raw = queue_path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return False
+        queue_path.write_text("", encoding="utf-8")
+    except OSError:
+        return False
+    for line in raw.splitlines():
+        try:
+            handler(json.loads(line))
+        except (json.JSONDecodeError, Exception):
+            pass
+    return True
+
+
+def _dispatch_request(req, sha_dir, decompile_dir, patterns_dir, results_dir, gen):
+    """Route a read request to the appropriate handler."""
+    req_type = req.get("type", "")
+    g = gen.read()
+    if req_type == "decompile":
+        _handle_decompile(req, decompile_dir, g)
+    elif req_type == "search_pattern":
+        _handle_search_pattern(req, sha_dir, patterns_dir, g)
+    else:
+        _handle_tool(req, sha_dir, results_dir, g)
+
+
+def _handle_decompile(req, decompile_dir, current_gen):
+    """Decompile one function, write to cache with generation stamp."""
     import ida_funcs
     import ida_hexrays
     import ida_name
 
     target = req.get("target", "")
-    max_lines = req.get("max_lines", 200)
-
-    # Resolve address
     ea = _resolve(target)
     if ea is None:
         return
-
     cache_file = decompile_dir / f"0x{ea:x}.json"
     if cache_file.exists():
         return
-
     func = ida_funcs.get_func(ea)
     if func is None:
         return
-
     try:
         cfunc = ida_hexrays.decompile(func.start_ea)
         pseudocode = str(cfunc)
         lines = pseudocode.splitlines()
+        max_lines = req.get("max_lines", 200)
         truncated = len(lines) > max_lines
         if truncated:
             lines = lines[:max_lines]
-
         result = {
             "address": f"0x{func.start_ea:x}",
             "name": ida_name.get_ea_name(func.start_ea),
@@ -184,10 +192,9 @@ def _handle_decompile(req: dict, sha_dir: Path, decompile_dir: Path) -> None:
             "line_count": len(lines),
             "truncated": truncated,
             "status": "ready",
+            "generation": current_gen,
         }
         cache_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
-
-        # Also write under the name key for name-based lookups
         name = ida_name.get_ea_name(func.start_ea)
         if name:
             name_file = decompile_dir / f"{name}.json"
@@ -197,26 +204,146 @@ def _handle_decompile(req: dict, sha_dir: Path, decompile_dir: Path) -> None:
         pass
 
 
-def _handle_search_pattern(req: dict, sha_dir: Path, patterns_dir: Path) -> None:
-    """Run a pattern search, write result to cache."""
+def _handle_search_pattern(req, sha_dir, patterns_dir, current_gen):
+    """Run pattern search using session manager engine."""
     pattern_type = req.get("pattern_type", "")
     cache_file = patterns_dir / f"{pattern_type}_v1.json"
     if cache_file.exists():
         return
 
-    # Import the session manager to run the pattern search
-    # This is the WORKER process — it has idalib loaded.
 
-    # We can't easily instantiate a full session manager here,
-    # but we can run the pattern logic directly.
-    # For now, skip — patterns are cached from prior runs.
-    # TODO: implement standalone pattern runner
+    mgr = _build_session_stub(sha_dir)
+    try:
+        result = mgr.search_pattern(mgr._active_binary_id, pattern_type, limit=50)
+        result["generation"] = current_gen
+        cache_file.write_text(json.dumps(result, separators=(',', ':')), encoding="utf-8")
+    except Exception:
+        pass
 
 
-def _handle_generic(req: dict, sha_dir: Path, results_dir: Path) -> None:
-    """Handle generic tool requests by caching their results."""
-    # TODO: implement per-tool handlers
-    pass
+def _handle_tool(req, sha_dir, results_dir, current_gen):
+    """Run any IDA tool via session manager and cache the result."""
+    req_type = req.get("type", "")
+    key = req.get("address_or_name", req.get("key", ""))
+    safe_key = key.replace("/", "_").replace("\\", "_").replace(":", "_")
+    filename = f"{req_type}_{safe_key}.json" if safe_key else f"{req_type}.json"
+    cache_file = results_dir / filename
+    if cache_file.exists():
+        return
+
+    mgr = _build_session_stub(sha_dir)
+    binary_id = mgr._active_binary_id
+    try:
+        method = getattr(mgr, req_type, None)
+        if method is None:
+            return
+        kwargs = {k: v for k, v in req.items() if k not in ("type", "binary_id")}
+        result = method(binary_id, **kwargs) if kwargs else method(binary_id)
+        if isinstance(result, dict):
+            result["generation"] = current_gen
+            cache_file.write_text(
+                json.dumps(result, separators=(',', ':')), encoding="utf-8",
+            )
+    except Exception:
+        pass
+
+
+def _handle_mutation(req, sha_dir, gen, write_results_dir, decompile_dir):
+    """Apply a write mutation to the IDA database."""
+    import ida_name
+
+    ticket_id = req.get("ticket_id", "")
+    mutation_type = req.get("type", "")
+    params = req.get("params", {})
+    result = {"ticket_id": ticket_id, "type": mutation_type, "status": "applied"}
+    invalidated: list[str] = []
+
+    try:
+        if mutation_type == "rename_function":
+            ea = int(params["address"], 16)
+            ida_name.set_name(ea, params["new_name"])
+            index_data = _load_index_data(sha_dir)
+            from ida_headless_mcp.mutations import invalidate_for_rename
+            invalidated = invalidate_for_rename(sha_dir, params["address"], index_data)
+
+        elif mutation_type == "set_comment":
+            import ida_bytes
+            ea = int(params["address"], 16)
+            ida_bytes.set_cmt(ea, params["comment"], False)
+            from ida_headless_mcp.mutations import invalidate_for_comment
+            invalidated = invalidate_for_comment(sha_dir, params["address"])
+
+        elif mutation_type == "patch_bytes":
+            import ida_bytes
+            ea = int(params["address"], 16)
+            data = bytes.fromhex(params["hex_bytes"])
+            ida_bytes.patch_bytes(ea, data)
+            index_data = _load_index_data(sha_dir)
+            from ida_headless_mcp.mutations import invalidate_for_patch
+            invalidated = invalidate_for_patch(sha_dir, params["address"], index_data)
+
+        new_gen = gen.bump()
+        result["generation"] = new_gen
+        result["invalidated"] = invalidated
+    except Exception as exc:
+        result["status"] = "error"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+
+    if ticket_id:
+        result_file = write_results_dir / f"{ticket_id}.json"
+        result_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+
+def _build_session_stub(sha_dir: Path):
+    """Build a minimal IDABinarySessionManager over the already-open database."""
+    import ida_funcs
+
+    from ida_headless_mcp.config import load_settings
+    from ida_headless_mcp.function_index import FunctionIndex
+    from ida_headless_mcp.session import BinaryRecord, IDABinarySessionManager
+
+    settings = load_settings()
+    sha = sha_dir.name
+    binary_id = f"b_{sha[:12]}"
+
+    mgr = IDABinarySessionManager.__new__(IDABinarySessionManager)
+    mgr.settings = settings
+    mgr._records = {}
+    mgr._active_binary_id = binary_id
+    mgr._indices = {}
+    mgr._manifest_path = settings.cache_dir / "manifest.json"
+
+    rec = BinaryRecord(
+        binary_id=binary_id, path=sha_dir / "workspace",
+        sha256=sha, size_bytes=0, format="", arch="", bits=64,
+        entry_points=[], function_count=ida_funcs.get_func_qty(),
+        segment_count=0, imports_count=0, exports_count=0,
+        strings_count=0, mitigations={}, sections=[],
+        active=True, root_filename="", analysis_ready=True,
+    )
+    mgr._records[binary_id] = rec
+
+    index_path = sha_dir / "index.json"
+    if index_path.exists():
+        mgr._indices[binary_id] = FunctionIndex.load(index_path)
+    else:
+        from ida_headless_mcp.function_index import build_function_index
+        idx = build_function_index()
+        idx.save(index_path)
+        mgr._indices[binary_id] = idx
+
+    return mgr
+
+
+def _load_index_data(sha_dir: Path) -> list:
+    """Load the cached function index as a list of dicts."""
+    index_path = sha_dir / "index.json"
+    if not index_path.exists():
+        return []
+    try:
+        return json.loads(index_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
 def _resolve(address_or_name: str) -> int | None:
