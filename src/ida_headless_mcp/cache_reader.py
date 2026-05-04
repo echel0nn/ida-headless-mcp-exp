@@ -169,3 +169,27 @@ class CacheReader:
             return len(queue.read_text(encoding="utf-8").strip().splitlines())
         except OSError:
             return 0
+
+
+
+def pe_mitigations(path: Path) -> dict[str, Any]:
+    """Parse PE header for security mitigations. No IDA needed."""
+    import struct
+
+    data = path.read_bytes()
+    if data[:2] != b"MZ":
+        return {"type": "not_pe"}
+    pe_off = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe_off : pe_off + 4] != b"PE\0\0":
+        return {"type": "bad_pe"}
+    opt_off = pe_off + 4 + 20
+    magic = struct.unpack_from("<H", data, opt_off)[0]
+    dll_off = opt_off + (70 if magic == 0x20B else 66)
+    dll_chars = struct.unpack_from("<H", data, dll_off)[0]
+    return {
+        "type": "pe",
+        "aslr_pie": bool(dll_chars & 0x0040),
+        "nx": bool(dll_chars & 0x0100),
+        "cfg": bool(dll_chars & 0x4000),
+        "raw_dll_characteristics": hex(dll_chars),
+    }
