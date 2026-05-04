@@ -232,19 +232,15 @@ def _handle_tool(req, sha_dir, results_dir, current_gen):
         return
 
     mgr = _build_session_stub(sha_dir)
-    binary_id = mgr._active_binary_id
     try:
-        method = getattr(mgr, req_type, None)
-        if method is None:
-            return
-        kwargs = {k: v for k, v in req.items() if k not in ("type", "binary_id")}
-        result = method(binary_id, **kwargs) if kwargs else method(binary_id)
+        from ida_headless_mcp.worker import _dispatch
+        result = _dispatch(mgr, req_type, req)
         if isinstance(result, dict):
             result["generation"] = current_gen
             cache_file.write_text(
                 json.dumps(result, separators=(',', ':')), encoding="utf-8",
             )
-    except Exception:
+    except (ValueError, KeyError, RuntimeError):
         pass
 
 

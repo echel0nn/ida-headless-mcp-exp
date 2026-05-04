@@ -82,6 +82,7 @@ class LifecycleManager:
         self.cache_dir = cache_dir
         self.ida_dir = ida_dir
         self._lifecycles: dict[str, BinaryLifecycle] = {}
+        self._worker_procs: dict[str, subprocess.Popen] = {}
 
     # ------------------------------------------------------------------
     # State persistence
@@ -197,9 +198,16 @@ class LifecycleManager:
             self._save(lc)
 
     def _start_binary_worker(self, lc: BinaryLifecycle) -> None:
-        """Spawn the unified binary worker for this binary."""
+        """Spawn a binary_worker process for this binary.
+
+        The worker opens the .i64, builds the index, and watches
+        request_queue.jsonl + write_queue.jsonl for work.
+        """
+        existing = self._worker_procs.get(lc.sha256)
+        if existing is not None and existing.poll() is None:
+            return
         if lc.decompile_worker_pid is not None and _pid_alive(lc.decompile_worker_pid):
-            return  # already running
+            return
 
         try:
             proc = subprocess.Popen(
@@ -211,10 +219,27 @@ class LifecycleManager:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self._worker_procs[lc.sha256] = proc
             lc.decompile_worker_pid = proc.pid
             self._save(lc)
         except OSError:
             pass
+
+    def check_workers(self) -> dict[str, str]:
+        """Check worker health. Restart dead workers for READY+ binaries."""
+        report: dict[str, str] = {}
+        for sha, proc in list(self._worker_procs.items()):
+            if proc.poll() is not None:
+                lc = next((lf for lf in self._lifecycles.values() if lf.sha256 == sha), None)
+                if lc and lc.state >= BinaryState.READY:
+                    self._start_binary_worker(lc)
+                    report[sha[:12]] = "restarted"
+                else:
+                    del self._worker_procs[sha]
+                    report[sha[:12]] = "removed"
+            else:
+                report[sha[:12]] = "alive"
+        return report
 
     def poll_analysis(self, binary_id: str) -> BinaryState:
         """Check if background analysis completed."""
