@@ -410,7 +410,7 @@ class IDABinarySessionManager:
                 "name": name,
                 "ordinal": ordn,
             }
-            for ea, ordn, name in idautils.Entries()
+            for _idx, ordn, ea, name in idautils.Entries()
         ]
         return {"binary_id": binary_id, "total": len(results), "exports": results}
 
