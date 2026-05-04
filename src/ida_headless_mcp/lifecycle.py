@@ -109,7 +109,22 @@ class LifecycleManager:
     # ------------------------------------------------------------------
 
     def register(self, binary_id: str, sha256: str, path: Path, size_bytes: int) -> BinaryLifecycle:
-        """Register a binary. Copies to workspace. Returns instantly."""
+        """Register a binary and start background analysis.
+
+        Copies the binary into its workspace and kicks off ``idat64 -B``
+        asynchronously. Returns instantly; the binary may still be
+        ``REGISTERED`` or ``ANALYZING`` on return.
+
+        Args:
+            binary_id: Caller-chosen identifier for the binary.
+            sha256: SHA-256 hash of the binary's contents.
+            path: Filesystem path to the source binary.
+            size_bytes: Size of the binary in bytes.
+
+        Returns:
+            The :class:`BinaryLifecycle` for this binary, either freshly
+            created or recovered from a prior session.
+        """
         import shutil
 
         # Check if already known

@@ -25,7 +25,13 @@ POLL_INTERVAL = 0.3
 
 
 def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
-    """Main loop: open .i64, watch queue, process requests, write cache."""
+    """Run the worker loop: open the .i64, process queued requests, write cache.
+
+    Args:
+        sha256: SHA-256 of the binary; identifies its cache subdirectory.
+        cache_dir: Root cache directory containing per-binary subdirs.
+        idle_timeout: Seconds without activity before the worker exits.
+    """
     sha_dir = cache_dir / sha256
     workspace = sha_dir / "workspace"
     queue_path = sha_dir / QUEUE_FILENAME
@@ -214,7 +220,7 @@ def _handle_generic(req: dict, sha_dir: Path, results_dir: Path) -> None:
 
 
 def _resolve(address_or_name: str) -> int | None:
-    """Resolve address or name to EA."""
+    """Resolve an address or symbol name to an effective address, or None."""
     import ida_idaapi
     import ida_name
 

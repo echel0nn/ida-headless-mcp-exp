@@ -30,14 +30,25 @@ class FunctionIndex:
     entries: list[FunctionIndexEntry]
 
     def save(self, path: Path) -> None:
-        """Persist index to a JSON file."""
+        """Persist the index to a JSON file.
+
+        Args:
+            path: Destination file path. Parent directories are created if missing.
+        """
         data = [_entry_to_json(e) for e in self.entries]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, separators=(',', ':')), encoding='utf-8')
 
     @classmethod
     def load(cls, path: Path) -> FunctionIndex:
-        """Load index from a JSON file written by save()."""
+        """Load an index from a JSON file written by ``save``.
+
+        Args:
+            path: Source file path.
+
+        Returns:
+            The deserialized ``FunctionIndex``.
+        """
         raw = json.loads(path.read_text(encoding='utf-8'))
         entries = [
             FunctionIndexEntry(

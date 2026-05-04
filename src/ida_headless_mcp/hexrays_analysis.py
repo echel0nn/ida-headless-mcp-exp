@@ -464,11 +464,30 @@ def query_ctree_call_sequences(
     """Find ordered pairs of calls where a first-set call precedes a second-set call.
 
     Argument matching modes:
-      - shared_argument_index=N: both calls must have the same preview at arg N
-      - match_any_second_arg=True: arg first_arg_index of the first call must match
-        ANY argument of the second call (useful for use-after-free where free(p)
-        then printf(fmt, p) shares p at different positions)
-      - shared_argument_index=None and match_any_second_arg=False: no arg constraint
+      * ``shared_argument_index=N``: both calls must have the same preview
+        at argument ``N``.
+      * ``match_any_second_arg=True``: argument ``first_arg_index`` of the
+        first call must match ANY argument of the second call (useful for
+        use-after-free where ``free(p)`` then ``printf(fmt, p)`` shares
+        ``p`` at different positions).
+      * ``shared_argument_index=None`` and ``match_any_second_arg=False``:
+        no argument constraint.
+
+    Args:
+        cfunc: Decompiled function (Hex-Rays ``cfunc_t``) to scan.
+        first_functions: Lower-cased names that the first call must match.
+        second_functions: Lower-cased names that the second call must match.
+        shared_argument_index: When set, require both calls to share the
+            same preview at this argument index.
+        first_arg_index: Argument index of the first call to use when
+            ``match_any_second_arg`` is enabled.
+        match_any_second_arg: When True, the chosen first-call argument
+            must appear at any position in the second call.
+        limit: Maximum number of pairs to return.
+
+    Returns:
+        A dict with the function entry address and name, the count of
+        pairs found, and the list of matching pairs.
     """
     import ida_hexrays
 
@@ -560,9 +579,21 @@ def query_ctree_unchecked_calls(
 ) -> dict[str, Any]:
     """Find calls whose return value is used without a NULL/error check.
 
-    Detects patterns like:
-      - null_deref: p = malloc(n); *p = x;  (no if(p) guard)
-      - unchecked_alloc: buf = realloc(old, n); buf[0] = ...;
+    Detects patterns such as:
+      * ``null_deref``: ``p = malloc(n); *p = x;`` (no ``if(p)`` guard).
+      * ``unchecked_alloc``: ``buf = realloc(old, n); buf[0] = ...;``.
+
+    Args:
+        cfunc: Decompiled function to scan.
+        target_functions: Lower-cased names of allocator-style callees to
+            check.
+        must_deref: Require a subsequent dereference of the returned value
+            when True.
+        limit: Maximum number of unchecked-call findings to return.
+
+    Returns:
+        A dict with the function entry address and name, the matched
+        unchecked-call sites, and the count returned.
     """
     import ida_hexrays
 
@@ -642,8 +673,16 @@ def get_hexrays_warnings(cfunc: Any) -> dict[str, Any]:
     """Extract decompiler warnings emitted by Hex-Rays for this function.
 
     Warnings signal degraded confidence: bad stack analysis, unrecovered
-    types, inconsistent CFG, etc.  The obligation system should treat
+    types, inconsistent CFG, etc. The obligation system should treat
     downstream claims as weaker when warnings are present.
+
+    Args:
+        cfunc: Decompiled function whose warnings should be reported.
+
+    Returns:
+        A dict with the function entry address and name, the warning
+        count, the per-warning details, and an overall ``confidence``
+        label (``degraded`` if any warning fired, otherwise ``normal``).
     """
     warnings: list[dict[str, Any]] = []
     try:
@@ -679,8 +718,22 @@ def pseudocode_slice(
     """Return only the pseudocode lines around specific call sites or addresses.
 
     Instead of returning a 400-line function, return the 10-20 lines that
-    matter: the code paths reaching each instance of *focus_callee* or
-    *focus_address*, with *context_lines* of surrounding context.
+    matter: the code paths reaching each instance of ``focus_callee`` or
+    ``focus_address``, with ``context_lines`` of surrounding context.
+
+    Args:
+        cfunc: Decompiled function whose pseudocode is sliced.
+        focus_callee: Callee name to anchor slices on. Matched
+            case-insensitively against tokens in each line.
+        focus_address: Hex address (e.g. ``"0x401000"``) to anchor slices
+            on, resolved through the line-to-EA map when available.
+        context_lines: Number of pseudocode lines to include on each side
+            of every focus line.
+        max_slices: Maximum number of slice windows to return.
+
+    Returns:
+        A dict with the function entry address and name, the total
+        pseudocode line count, the slice count, and the slice windows.
     """
     # Get full pseudocode lines
     try:
@@ -762,11 +815,25 @@ def microcode_def_use(
     """Extract microcode-level use/def lists for instructions in a function.
 
     For each microcode instruction, return what locations it reads (uses)
-    and writes (defs). When *target_callee* is set, only report instructions
-    that are calls to that callee.
+    and writes (defs). When ``target_callee`` is set, only report
+    instructions that are calls to that callee.
 
     Also reports if the same use-list appears in multiple call instructions
-    (same-arg evidence for double-free, use-after-free).
+    (same-argument evidence for double-free or use-after-free).
+
+    Args:
+        cfunc: Decompiled function whose microcode is inspected.
+        target_callee: When non-empty, restrict reporting to call
+            instructions whose callee name (after stripping a ``j_`` thunk
+            prefix) contains this token.
+        max_instructions: Upper bound on instructions scanned across all
+            microcode blocks.
+
+    Returns:
+        A dict with the function entry address and name, the microcode
+        maturity, block count, scanned and matched instruction counts,
+        the per-instruction use/def lists, and any shared use-list
+        patterns detected across calls.
     """
     import ida_hexrays
 
@@ -857,11 +924,20 @@ def microcode_value_ranges(cfunc: Any) -> dict[str, Any]:
     """Extract value-range annotations from the decompiler's microcode.
 
     IDA's value-range analysis computes constraints on variables at each
-    basic block boundary (e.g., 'rcx.8:!=0' means rcx is known non-zero).
-    These are IR-backed bounds proofs, not heuristic guesses.
+    basic block boundary (e.g. ``rcx.8:!=0`` means ``rcx`` is known
+    non-zero). These are IR-backed bounds proofs, not heuristic guesses.
 
     We extract them from the microcode text representation because the
-    programmatic get_valranges() API is fragile across maturity levels.
+    programmatic ``get_valranges()`` API is fragile across maturity
+    levels.
+
+    Args:
+        cfunc: Decompiled function whose microcode is inspected.
+
+    Returns:
+        A dict with the function entry address and name, microcode
+        maturity, block count, the raw range annotations, and the
+        variables classified as bounded versus unbounded.
     """
     import ida_hexrays
 
