@@ -80,6 +80,8 @@ class IDABinarySessionManager:
         self._active_binary_id: str | None = None
         self._indices: dict[str, FunctionIndex] = {}
         self._manifest_path = self.settings.cache_dir / "manifest.json"
+        self._session_state_path = self.settings.cache_dir / "session_state.json"
+        self._restore_session()
 
     # ------------------------------------------------------------------
     # Public API
@@ -137,6 +139,13 @@ class IDABinarySessionManager:
         # else: _ensure_indexed() will build it on demand
 
         self._touch_manifest(sha256, record.root_filename, record.function_count)
+        self._save_session_state(binary_id)
+
+        # Pre-warm: build index and decompile top functions into cache
+        # so subsequent MCP calls are instant cache hits.
+        self._ensure_indexed(binary_id)
+        self._warmup_decompile_cache(binary_id, top_n=10)
+
         return record
 
     def close_binary(self, binary_id: str, save: bool = False) -> dict[str, Any]:
@@ -1166,55 +1175,137 @@ class IDABinarySessionManager:
             ],
             "pattern_hits": pattern_hits,
         }
-    def classify_behavior(self, binary_id: str) -> dict[str, Any]:
-        """Map imported APIs to ATT&CK-aligned behavioral categories."""
+    def call_chain(
+        self,
+        binary_id: str,
+        target_function: str,
+        *,
+        depth: int = 5,
+        direction: str = "callers",
+    ) -> dict[str, Any]:
+        """Walk caller/callee chains from a target function to a given depth.
+
+        Returns the full call tree reaching (or reachable from) the target.
+        Uses the function index — no decompilation needed.
+        """
         self._activate(binary_id)
-        self._require(binary_id)  # validates binary_id is known
         self._ensure_indexed(binary_id)
         index = self._indices[binary_id]
 
-        # Collect all callees across user functions
-        all_callees: set[str] = set()
+        # Build lookup maps
+        by_name: dict[str, Any] = {}
+        for e in index.entries:
+            by_name[e.name.lower()] = e
+            by_name[f"0x{e.address:x}"] = e
+
+        target_key = target_function.strip().lower()
+        root = by_name.get(target_key)
+        if root is None:
+            # Try partial match
+            for name, entry in by_name.items():
+                if target_key in name:
+                    root = entry
+                    break
+        if root is None:
+            raise ValueError(f"Function not found: {target_function!r}")
+
+        # BFS walk
+        visited: set[str] = set()
+        layers: list[list[dict[str, Any]]] = []
+        current_names = [root.name]
+        visited.add(root.name.lower())
+
+        for d in range(depth):
+            next_names: list[str] = []
+            layer: list[dict[str, Any]] = []
+            for name in current_names:
+                entry = by_name.get(name.lower())
+                if entry is None:
+                    continue
+                neighbors = entry.callers if direction == "callers" else entry.callees
+                for nb in neighbors:
+                    if nb.lower() in visited:
+                        continue
+                    visited.add(nb.lower())
+                    nb_entry = by_name.get(nb.lower())
+                    layer.append({
+                        "name": nb,
+                        "address": f"0x{nb_entry.address:x}" if nb_entry else None,
+                        "depth": d + 1,
+                        "reached_from": name,
+                    })
+                    next_names.append(nb)
+            if not layer:
+                break
+            layers.append(layer)
+            current_names = next_names
+
+        all_nodes = [item for layer in layers for item in layer]
+        return {
+            "binary_id": binary_id,
+            "target": root.name,
+            "target_address": f"0x{root.address:x}",
+            "direction": direction,
+            "depth_searched": len(layers),
+            "nodes_found": len(all_nodes),
+            "chain": all_nodes,
+        }
+
+    def classify_behavior(self, binary_id: str) -> dict[str, Any]:
+        """Map imported APIs to ATT&CK-aligned behavioral categories."""
+        self._activate(binary_id)
+        self._require(binary_id)
+        self._ensure_indexed(binary_id)
+        index = self._indices[binary_id]
+
+        # Collect normalized API names from callees AND import table
+        all_apis: set[str] = set()
         for e in index.entries:
             if not e.is_thunk:
-                all_callees.update(c.lower() for c in e.callees)
-                all_callees.update(c[2:] for c in e.callees if c.lower().startswith('j_'))
+                for c in e.callees:
+                    all_apis.add(_normalize_api_name(c))
+        try:
+            imp_data = self.imports(binary_id)
+            for imp in imp_data.get('imports', []):
+                all_apis.add(_normalize_api_name(imp['name']))
+        except (RuntimeError, ValueError):
+            pass
 
+        # Normalize the dictionary keys too
         categories = {
             'c2_networking': {
-                'internetopenurla', 'internetopena', 'internetconnecta',
-                'httpsendrequesta', 'httpopenrequesta', 'internetreadfile',
+                'internetopenurl', 'internetopen', 'internetconnect',
+                'httpsendrequest', 'httpopenrequest', 'internetreadfile',
                 'urldownloadtofile', 'wininet', 'winhttpopenrequest',
                 'wsastartup', 'socket', 'connect', 'send', 'recv',
-                'gethostbyname', 'getaddrinfo', 'dnsquery_a',
+                'gethostbyname', 'getaddrinfo', 'dnsquery',
             },
             'persistence': {
-                'regsetvalueexa', 'regsetvaluew', 'regcreatekeyexa',
-                'createservicea', 'createservicew', 'changeserviceconfig2a',
-                'schtaskcreate', 'copyfile', 'copyfilea', 'movefileex',
-                'writeprocessmemory', 'setwindowshookexa',
+                'regsetvalue', 'regcreatekey',
+                'createservice', 'changeserviceconfig2',
+                'schtaskcreate', 'copyfile', 'movefile',
+                'writeprocessmemory', 'setwindowshookex',
             },
             'execution': {
-                'createprocessa', 'createprocessw', 'shellexecutea',
-                'shellexecuteexw', 'system', 'popen', 'winexec',
+                'createprocess', 'shellexecute',
+                'system', 'popen', 'winexec',
                 'createremotethread', 'ntcreatethreadex',
-                'virtualalloc', 'virtualallocex', 'virtualprotect',
+                'virtualalloc', 'virtualprotect',
             },
             'credential_access': {
                 'credssp', 'logonuser', 'lsaenumeratelogonsessions',
-                'cryptunprotectdata', 'credread', 'getpassword',
-                'mimikatz', 'sekurlsa', 'samdump',
+                'cryptunprotectdata', 'credread',
             },
             'defense_evasion': {
                 'ntunmapviewofsection', 'zwunmapviewofsection',
-                'virtualprotect', 'virtualprotectex',
+                'virtualprotect',
                 'setthreadcontext', 'ntsetinformationthread',
-                'deleteservice', 'deletefile', 'deletefilea',
-                'movefile', 'movefileexa', 'cryptencrypt',
+                'deleteservice', 'deletefile',
+                'movefile', 'cryptencrypt',
             },
             'discovery': {
                 'getsysteminfo', 'getcomputername', 'getusername',
-                'getversionexa', 'getadaptersinfo',
+                'getversionex', 'getadaptersinfo',
                 'enumprocesses', 'process32first', 'process32next',
                 'createtoolhelp32snapshot', 'gettokeninformation',
                 'lookupaccountsid', 'netuserenum', 'netshareenum',
@@ -1225,14 +1316,14 @@ class IDABinarySessionManager:
             },
             'privilege_escalation': {
                 'adjusttokenprivileges', 'openprocesstoken',
-                'lookupprivilegevaluea', 'impersonateloggedonuser',
-                'setprivilegevalue', 'ntquerysysteminformation',
+                'lookupprivilegevalue', 'impersonateloggedonuser',
+                'ntquerysysteminformation',
             },
         }
 
         results: dict[str, list[str]] = {}
         for category, apis in categories.items():
-            hits = sorted(all_callees & apis)
+            hits = sorted(all_apis & apis)
             if hits:
                 results[category] = hits
 
@@ -1248,23 +1339,29 @@ class IDABinarySessionManager:
         self._activate(binary_id)
         index = self._indices[binary_id]
 
-        all_callees: set[str] = set()
+        all_apis: set[str] = set()
         all_strings: set[str] = set()
         for e in index.entries:
             if not e.is_thunk:
-                all_callees.update(c.lower() for c in e.callees)
-                all_callees.update(c[2:] for c in e.callees if c.lower().startswith('j_'))
+                for c in e.callees:
+                    all_apis.add(_normalize_api_name(c))
                 all_strings.update(s.lower() for s in e.string_refs)
+        # Also scan import table directly
+        try:
+            imp_data = self.imports(binary_id)
+            for imp in imp_data.get('imports', []):
+                all_apis.add(_normalize_api_name(imp['name']))
+        except (RuntimeError, ValueError):
+            pass
 
         techniques: list[dict[str, Any]] = []
 
         # Anti-debug APIs
         anti_debug_apis = {
             'isdebuggerpresent', 'checkremotedebuggerpresent',
-            'ntqueryinformationprocess', 'outputdebugstringa',
-            'closehandle',  # used with invalid handle for exception-based detection
+            'ntqueryinformationprocess', 'outputdebugstring',
         }
-        hits = sorted(all_callees & anti_debug_apis)
+        hits = sorted(all_apis & anti_debug_apis)
         if hits:
             techniques.append({
                 'technique': 'anti_debug_api',
@@ -1288,7 +1385,7 @@ class IDABinarySessionManager:
 
         # Timing-based detection APIs
         timing_apis = {'gettickcount', 'gettickcount64', 'queryperformancecounter', 'rdtsc'}
-        timing_hits = sorted(all_callees & timing_apis)
+        timing_hits = sorted(all_apis & timing_apis)
         if timing_hits:
             techniques.append({
                 'technique': 'timing_check',
@@ -1298,7 +1395,7 @@ class IDABinarySessionManager:
 
         # Process enumeration (sandbox detection)
         process_apis = {'createtoolhelp32snapshot', 'process32first', 'process32next', 'enumprocesses'}
-        proc_hits = sorted(all_callees & process_apis)
+        proc_hits = sorted(all_apis & process_apis)
         if proc_hits:
             techniques.append({
                 'technique': 'process_enumeration',
@@ -1609,6 +1706,68 @@ class IDABinarySessionManager:
         # The background analysis fills in xrefs, FLIRT sigs, and type info over time.
         # Tools that need full analysis call _ensure_analysis() on demand.
 
+    def _save_session_state(self, binary_id: str) -> None:
+        """Persist current session so server restart can resume."""
+        rec = self._records.get(binary_id)
+        if rec is None:
+            return
+        state = {
+            "binary_id": binary_id,
+            "sha256": rec.sha256,
+            "original_path": str(rec.path),
+            "root_filename": rec.root_filename,
+        }
+        self._session_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._session_state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    def _restore_session(self) -> None:
+        """On startup, re-open the last active binary if its .i64 exists."""
+        if not self._session_state_path.exists():
+            return
+        try:
+            state = json.loads(self._session_state_path.read_text(encoding="utf-8"))
+            sha = state["sha256"]
+            workspace = self._workspace_path(sha)
+            # Find any .exe in the workspace
+            exe_files = list(workspace.glob("*.exe")) + list(workspace.glob("*.EXE"))
+            if not exe_files:
+                return
+            binary_path = exe_files[0]
+            # Open — fast if .i64 exists (0.5s), cold if not (17s)
+            try:
+                self._ida.close_database(True)
+            except (RuntimeError, OSError):
+                pass
+            self._open_database(binary_path)
+            rec = self._collect_metadata(
+                binary_id=state["binary_id"],
+                path=Path(state["original_path"]),
+                sha256=sha,
+                size_bytes=binary_path.stat().st_size,
+            )
+            self._records[state["binary_id"]] = rec
+            self._active_binary_id = state["binary_id"]
+            index_path = self._index_cache_path(sha)
+            if index_path.exists():
+                self._indices[state["binary_id"]] = FunctionIndex.load(index_path)
+        except (KeyError, OSError, RuntimeError, json.JSONDecodeError):
+            pass  # corrupt state file — start fresh
+
+    def _warmup_decompile_cache(self, binary_id: str, top_n: int = 10) -> None:
+        """Pre-decompile top-N functions by complexity into cache."""
+        if binary_id not in self._indices:
+            return
+        index = self._indices[binary_id]
+        by_cx = sorted(
+            (e for e in index.entries if not e.is_thunk and not e.is_library),
+            key=lambda e: -e.cyclomatic_complexity,
+        )
+        for entry in by_cx[:top_n]:
+            try:
+                self.decompile(binary_id, f"0x{entry.address:x}", max_lines=200)
+            except (RuntimeError, ValueError):
+                pass
+
     def _ensure_analysis(self) -> None:
         """Block until auto-analysis is complete. Call only when full index is needed."""
         import ida_auto
@@ -1817,3 +1976,25 @@ def _pe_mitigations(path: Path) -> dict[str, Any]:
         "cfg": bool(dll_chars & image_dllcharacteristics_guard_cf),
         "raw_dll_characteristics": hex(dll_chars),
     }
+
+
+
+def _normalize_api_name(name: str) -> str:
+    """Normalize a Windows API name for matching: strip j_ prefix, A/W/Ex suffix, lowercase.
+
+    CreateProcessW -> createprocess
+    j_IsDebuggerPresent -> isdebuggerpresent
+    LoadLibraryExW -> loadlibrary
+    """
+    n = name.strip().lower()
+    if n.startswith('j_'):
+        n = n[2:]
+    # Strip trailing W, A, ExW, ExA (but not single-char names)
+    if len(n) > 3:
+        if n.endswith('exw') or n.endswith('exa'):
+            n = n[:-3]
+        elif n.endswith('w') or n.endswith('a'):
+            # Only strip if it looks like a suffix (preceded by lowercase)
+            if len(n) > 1 and n[-2].islower():
+                n = n[:-1]
+    return n

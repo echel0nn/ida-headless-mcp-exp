@@ -30,3 +30,16 @@ projects/
 fixture_paths.txt
 
 .local-rule-fixtures/projects/
+
+
+# Classified / evidence samples — NEVER commit
+.local-smoke/
+.local-probe/
+*.exe
+*.EXE
+*.dll
+*.DLL
+*.sys
+*.SYS
+malware_files/
+evidence/
