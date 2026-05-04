@@ -654,6 +654,94 @@ def find_paths(
 
 
 # ======================================================================
+# TOOLS — write operations (queued to worker, serialized)
+# ======================================================================
+
+
+def _mutate(binary_id: str, mutation_type: str, agent_id: str = "", **params: Any) -> dict:
+    """Submit a write operation to the mutation queue."""
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    from .mutations import MutationQueue
+
+    mq = MutationQueue(fe.settings.cache_dir)
+    return mq.submit(sha, mutation_type, params, agent_id=agent_id)
+
+
+@mcp.tool()
+def rename_function(binary_id: str, address: str, new_name: str, agent_id: str = "") -> dict:
+    """Rename a function. Queued — invalidates decompile cache for this function and all callers."""
+    return _mutate(binary_id, "rename_function", agent_id, address=address, new_name=new_name)
+
+
+@mcp.tool()
+def rename_variable(
+    binary_id: str, function_address: str, old_name: str, new_name: str, agent_id: str = ""
+) -> dict:
+    """Rename a local variable. Queued — invalidates decompile cache for the function."""
+    return _mutate(
+        binary_id, "rename_variable", agent_id,
+        function_address=function_address, old_name=old_name, new_name=new_name,
+    )
+
+
+@mcp.tool()
+def set_comment(binary_id: str, address: str, comment: str, agent_id: str = "") -> dict:
+    """Set a comment at an address. Queued — invalidates decompile cache for the function."""
+    return _mutate(binary_id, "set_comment", agent_id, address=address, comment=comment)
+
+
+@mcp.tool()
+def set_function_type(
+    binary_id: str, function_address: str, prototype: str, agent_id: str = ""
+) -> dict:
+    """Set a function's prototype/type. Queued — invalidates decompile cache."""
+    return _mutate(
+        binary_id, "set_function_type", agent_id,
+        function_address=function_address, prototype=prototype,
+    )
+
+
+@mcp.tool()
+def set_variable_type(
+    binary_id: str, function_address: str, variable_name: str, new_type: str, agent_id: str = ""
+) -> dict:
+    """Set a local variable's type. Queued — invalidates decompile cache."""
+    return _mutate(
+        binary_id, "set_variable_type", agent_id,
+        function_address=function_address, variable_name=variable_name, new_type=new_type,
+    )
+
+
+@mcp.tool()
+def patch_bytes(binary_id: str, address: str, hex_bytes: str, agent_id: str = "") -> dict:
+    """Patch bytes at an address. Queued — invalidates decompile cache for containing function."""
+    return _mutate(binary_id, "patch_bytes", agent_id, address=address, hex_bytes=hex_bytes)
+
+
+@mcp.tool()
+def poll_mutation(binary_id: str, ticket_id: str) -> dict:
+    """Check if a mutation has been applied. Returns result or 'queued'."""
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    from .mutations import MutationQueue
+
+    mq = MutationQueue(fe.settings.cache_dir)
+    result = mq.poll_result(sha, ticket_id)
+    if result:
+        return result
+    return {"ticket_id": ticket_id, "status": "queued", "message": "Still processing."}
+
+
+@mcp.tool()
+def get_generation(binary_id: str) -> dict:
+    """Get the current generation counter. Increments on every write operation."""
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    from .mutations import Generation
+
+    gen = Generation(fe.settings.cache_dir / sha)
+    return {"binary_id": binary_id, "generation": gen.read()}
 
 
 def create_server() -> FastMCP:
