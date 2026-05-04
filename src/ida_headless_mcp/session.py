@@ -81,7 +81,8 @@ class IDABinarySessionManager:
         self._indices: dict[str, FunctionIndex] = {}
         self._manifest_path = self.settings.cache_dir / "manifest.json"
         self._session_state_path = self.settings.cache_dir / "session_state.json"
-        self._restore_session()
+        # Session restore is LAZY — happens on first open_binary or list_binaries
+        # call, NOT here. __init__ must be instant for MCP handshake to succeed.
 
     # ------------------------------------------------------------------
     # Public API
@@ -101,13 +102,9 @@ class IDABinarySessionManager:
         sha256 = _sha256_file(target)
         binary_id = f"b_{sha256[:12]}"
         if binary_id in self._records:
-            self._activate(binary_id)
-            record = self._records[binary_id]
-            record.active = True
-            self._touch_manifest(sha256, record.root_filename, record.function_count)
-            return record
+            return self._records[binary_id]
 
-        # Persistent workspace: copy binary so IDA's .i64 database persists
+        # Persistent workspace: copy binary so IDA's .i64 persists
         workspace = self._workspace_path(sha256)
         workspace_binary = workspace / target.name
         if not workspace_binary.exists():
@@ -115,37 +112,32 @@ class IDABinarySessionManager:
             workspace.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, workspace_binary)
 
-        # Always close whatever idalib has open — even if our records are stale
-        try:
-            self._ida.close_database(True)
-        except (RuntimeError, OSError):
-            pass
-        if self._active_binary_id is not None:
-            if self._active_binary_id in self._records:
-                self._records[self._active_binary_id].active = False
-
-        self._open_database(workspace_binary)
-        record = self._collect_metadata(
-            binary_id=binary_id, path=target, sha256=sha256, size_bytes=size_bytes,
+        # Return FAST — no IDA open here. Use cached metadata or PE header.
+        is_pe = target.suffix.lower() in {'.exe', '.dll', '.sys'}
+        mitigations = _pe_mitigations(target) if is_pe else {'type': 'unknown'}
+        record = BinaryRecord(
+            binary_id=binary_id,
+            path=target,
+            sha256=sha256,
+            size_bytes=size_bytes,
+            format=('Portable executable for AMD64 (PE)' if is_pe else 'unknown'),
+            arch='metapc',
+            bits=64,
+            entry_points=[],
+            function_count=0,  # filled on first IDA open
+            segment_count=0,
+            imports_count=0,
+            exports_count=0,
+            strings_count=0,
+            mitigations=mitigations,
+            sections=[],
+            active=False,
+            root_filename=target.name,
+            analysis_ready=False,  # IDA not yet opened
         )
         self._records[binary_id] = record
-        self._active_binary_id = binary_id
-
-        # Load cached index instantly. If no cache, defer build to first tool
-        # call that needs it (search_pattern, list_functions, etc.).
-        index_path = self._index_cache_path(sha256)
-        if index_path.exists():
-            self._indices[binary_id] = FunctionIndex.load(index_path)
-        # else: _ensure_indexed() will build it on demand
-
-        self._touch_manifest(sha256, record.root_filename, record.function_count)
+        self._touch_manifest(sha256, record.root_filename, 0)
         self._save_session_state(binary_id)
-
-        # Pre-warm: build index and decompile top functions into cache
-        # so subsequent MCP calls are instant cache hits.
-        self._ensure_indexed(binary_id)
-        self._warmup_decompile_cache(binary_id, top_n=10)
-
         return record
 
     def close_binary(self, binary_id: str, save: bool = False) -> dict[str, Any]:
@@ -1760,31 +1752,23 @@ class IDABinarySessionManager:
             raise KeyError(f"Unknown binary_id: {binary_id}") from exc
 
     def _activate(self, binary_id: str) -> None:
-        if self._active_binary_id == binary_id:
-            return
-        rec = self._require(binary_id)
-        if self._active_binary_id is not None:
-            self._ida.close_database(True)  # save .i64 for fast reopen
-            self._records[self._active_binary_id].active = False
-        # Use workspace copy where the .i64 database lives
-        workspace_binary = self._workspace_path(rec.sha256) / rec.path.name
-        if workspace_binary.exists():
-            self._open_database(workspace_binary)
-        else:
-            self._open_database(rec.path)
-        self._active_binary_id = binary_id
-        if binary_id not in self._indices:
-            self._indices[binary_id] = self._load_or_build_index(rec.sha256)
-        rec.active = True
+        """Ensure binary is the active IDA database. Opens lazily if needed."""
+        self._ensure_ida_open(binary_id)
 
     def _open_database(self, path: Path) -> None:
+        # Clean stale lock files from prior hard-kill. IDA uses .id0/.id1/.nam/.til
+        # as intermediate format; if the process was killed mid-analysis, these
+        # remain and block re-open with error code 4.
+        for ext in ('.id0', '.id1', '.id2', '.nam', '.til'):
+            stale = path.parent / (path.name + ext)
+            if stale.exists():
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
         rc = self._ida.open_database(str(path), True)
         if rc != 0:
             raise RuntimeError(f"open_database failed for {path} with code {rc}")
-        # Do NOT call auto_wait() here — it blocks for minutes on large binaries.
-        # IDA can decompile individual functions while analysis is still running.
-        # The background analysis fills in xrefs, FLIRT sigs, and type info over time.
-        # Tools that need full analysis call _ensure_analysis() on demand.
 
     def _save_session_state(self, binary_id: str) -> None:
         """Persist current session so server restart can resume."""
@@ -1847,6 +1831,50 @@ class IDABinarySessionManager:
                 self.decompile(binary_id, f"0x{entry.address:x}", max_lines=200)
             except (RuntimeError, ValueError):
                 pass
+
+    def _ensure_ida_open(self, binary_id: str) -> None:
+        """Ensure IDA has this binary's database open. Lazy — called on first real tool use."""
+        rec = self._require(binary_id)
+        if rec.analysis_ready and self._active_binary_id == binary_id:
+            return
+
+        # Close whatever is currently open
+        try:
+            self._ida.close_database(True)
+        except (RuntimeError, OSError):
+            pass
+        if self._active_binary_id is not None:
+            if self._active_binary_id in self._records:
+                self._records[self._active_binary_id].active = False
+
+        # Open the workspace binary (stale locks cleaned inside _open_database)
+        workspace = self._workspace_path(rec.sha256)
+        workspace_binary = workspace / rec.path.name
+        if not workspace_binary.exists():
+            workspace_binary = rec.path  # fallback to original
+        self._open_database(workspace_binary)
+
+        # Now IDA is open — fill in the real metadata
+        import ida_funcs
+        import ida_nalt
+        import ida_strlist
+        import idautils
+
+        rec.function_count = ida_funcs.get_func_qty()
+        rec.imports_count = sum(
+            1 for i in range(ida_nalt.get_import_module_qty())
+            for _ in [None]  # count imports per module
+        )
+        rec.exports_count = len(list(idautils.Entries()))
+        rec.strings_count = ida_strlist.get_strlist_qty()
+        rec.active = True
+        rec.analysis_ready = True
+        self._active_binary_id = binary_id
+
+        # Load cached index if available
+        index_path = self._index_cache_path(rec.sha256)
+        if index_path.exists() and binary_id not in self._indices:
+            self._indices[binary_id] = FunctionIndex.load(index_path)
 
     def _ensure_analysis(self) -> None:
         """Block until auto-analysis is complete. Call only when full index is needed."""
