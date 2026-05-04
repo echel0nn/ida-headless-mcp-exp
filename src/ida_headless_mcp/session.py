@@ -113,9 +113,14 @@ class IDABinarySessionManager:
             workspace.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, workspace_binary)
 
+        # Always close whatever idalib has open — even if our records are stale
+        try:
+            self._ida.close_database(True)
+        except (RuntimeError, OSError):
+            pass
         if self._active_binary_id is not None:
-            self._ida.close_database(False)
-            self._records[self._active_binary_id].active = False
+            if self._active_binary_id in self._records:
+                self._records[self._active_binary_id].active = False
 
         self._open_database(workspace_binary)
         record = self._collect_metadata(
