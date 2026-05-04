@@ -248,6 +248,32 @@ class IDABinarySessionManager:
         return result
 
     def decompile(self, binary_id: str, address_or_name: str, max_lines: int = 500) -> dict[str, Any]:
+        """Decompile a function. Returns cached result or queues for background decompilation.
+
+        NEVER blocks on Hex-Rays. If the result isn't cached, it queues the
+        request to the background decompile worker and returns status=pending.
+        The consumer retries until the result appears in cache.
+        """
+        rec = self._require(binary_id)
+        cache_file = self._cache_file(rec.sha256, address_or_name)
+        if cache_file.exists():
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            cached["cache_hit"] = True
+            cached["binary_id"] = binary_id
+            cached["status"] = "ready"
+            return cached
+
+        # Not cached — queue for background decompilation
+        self._queue_decompile(rec.sha256, address_or_name)
+        return {
+            "binary_id": binary_id,
+            "address": address_or_name,
+            "status": "pending",
+            "message": "Decompilation queued. Retry this call — result will appear in cache.",
+        }
+
+    def _decompile_sync(self, binary_id: str, address_or_name: str, max_lines: int = 500) -> dict[str, Any]:
+        """Synchronous decompile — used internally by tools that run in-process (search_pattern etc)."""
         rec = self._require(binary_id)
         cache_file = self._cache_file(rec.sha256, address_or_name)
         if cache_file.exists():
@@ -284,11 +310,19 @@ class IDABinarySessionManager:
             "line_count": len(lines),
             "truncated": truncated,
             "cache_hit": False,
+            "status": "ready",
         }
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
-
         return result
+
+    def _queue_decompile(self, sha256: str, address_or_name: str) -> None:
+        """Append a decompile request to the background worker queue."""
+        queue_path = self.settings.cache_dir / sha256 / "decompile_queue.jsonl"
+        queue_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = json.dumps({"address": address_or_name})
+        with queue_path.open("a", encoding="utf-8") as fh:
+            fh.write(entry + "\n")
 
     def xrefs_to(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
         self._activate(binary_id)

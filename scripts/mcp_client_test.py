@@ -125,7 +125,7 @@ def main() -> int:
         results["tools/list"] = f"OK ({len(tools)})"
 
         # Open IrfanView (the heavy one — IDA analysis)
-        print(f"[3] open_binary (IrfanView, expect ~30s)...")
+        print("[3] open_binary (IrfanView, expect ~30s)...")
         t0 = time.monotonic()
         data = client.tool("open_binary", {"path": BINARY}, timeout=300)
         elapsed = time.monotonic() - t0
