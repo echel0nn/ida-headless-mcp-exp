@@ -339,6 +339,19 @@ def binary_survey(binary_id: str, max_hotspots: int = 10) -> dict:
 
 
 @mcp.tool()
+def call_chain(
+    binary_id: str,
+    target_function: str,
+    depth: int = 5,
+    direction: str = "callers",
+) -> dict:
+    """Walk caller/callee chains from a target function. No decompilation needed."""
+    return _backend().call_chain(
+        binary_id, target_function, depth=depth, direction=direction,
+    )
+
+
+@mcp.tool()
 def def_use(
     binary_id: str,
     address_or_name: str,

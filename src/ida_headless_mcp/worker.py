@@ -157,6 +157,10 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
             timeout_seconds=p.get("timeout_seconds", 60),
             max_paths=p.get("max_paths", 3),
         ),
+        "call_chain": lambda p: mgr.call_chain(
+            p["binary_id"], p["target_function"],
+            depth=p.get("depth", 5), direction=p.get("direction", "callers"),
+        ),
         "ping": lambda p: {"status": "alive", "pid": __import__("os").getpid()},
         "shutdown": lambda p: _shutdown(),
     }
