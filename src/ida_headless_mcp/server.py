@@ -86,6 +86,12 @@ def binary_metadata(binary_id: str) -> dict:
 
 
 @mcp.tool()
+def poll_analysis(binary_id: str) -> dict:
+    """Check analysis progress. Returns lifecycle state (REGISTERED/ANALYZING/READY/ACTIVE/INDEXED)."""
+    return _backend().call("poll_analysis", {"binary_id": binary_id})
+
+
+@mcp.tool()
 def list_functions(
     binary_id: str,
     offset: int = 0,
