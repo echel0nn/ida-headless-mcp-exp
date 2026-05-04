@@ -194,14 +194,16 @@ class IDABinarySessionManager:
         }
 
     def poll_analysis(self, binary_id: str) -> dict[str, Any]:
-        """Check analysis progress. Returns current lifecycle state.
+        """Check analysis progress.
 
-        States:
-          REGISTERED  — binary known, background analysis not yet started
-          ANALYZING   — idat64 -B running in background (wait)
-          READY       — .i64 exists, IDA can open in <1s
-          ACTIVE      — idalib has database loaded
-          INDEXED     — function index built, all tools available
+        Returns:
+            Current lifecycle state. One of:
+
+            * ``REGISTERED`` — binary known, background analysis not yet started
+            * ``ANALYZING`` — idat64 -B running in background (wait)
+            * ``READY`` — .i64 exists, IDA can open in <1s
+            * ``ACTIVE`` — idalib has database loaded
+            * ``INDEXED`` — function index built, all tools available
         """
         lc = self._lifecycle.get(binary_id)
         if lc is None:
@@ -1999,9 +2001,10 @@ class IDABinarySessionManager:
         self._manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
 
     def evict_lru(self, keep_n: int = 50) -> list[str]:
-        """Remove cache for least-recently-used binaries beyond *keep_n*.
+        """Remove cache for least-recently-used binaries beyond ``keep_n``.
 
-        Returns list of evicted SHA256 prefixes.
+        Returns:
+            List of evicted SHA256 prefixes.
         """
         import shutil
 
@@ -2102,11 +2105,15 @@ def _pe_mitigations(path: Path) -> dict[str, Any]:
 
 
 def _normalize_api_name(name: str) -> str:
-    """Normalize a Windows API name for matching: strip j_ prefix, A/W/Ex suffix, lowercase.
+    """Normalize a Windows API name for matching.
 
-    CreateProcessW -> createprocess
-    j_IsDebuggerPresent -> isdebuggerpresent
-    LoadLibraryExW -> loadlibrary
+    Strips the ``j_`` prefix and trailing ``A``/``W``/``Ex`` suffix, then
+    lowercases the result.
+
+    Examples:
+        ``CreateProcessW`` -> ``createprocess``
+        ``j_IsDebuggerPresent`` -> ``isdebuggerpresent``
+        ``LoadLibraryExW`` -> ``loadlibrary``
     """
     n = name.strip().lower()
     if n.startswith('j_'):

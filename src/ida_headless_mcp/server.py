@@ -33,7 +33,7 @@ mcp = FastMCP(
 
 
 class _Frontend:
-    """Pure cache reader + lifecycle manager. Zero IDA imports."""
+    """Pure cache reader and lifecycle manager with zero IDA imports."""
 
     def __init__(self) -> None:
         self.settings = load_settings()
@@ -75,7 +75,7 @@ class _Frontend:
         key: str = "",
         params: dict | None = None,
     ) -> dict[str, Any]:
-        """Generic: return cached result or queue and return pending."""
+        """Return a cached tool result, or queue the request and return pending."""
         sha = self._sha(binary_id)
         lc = self.lifecycle.get(binary_id)
         if lc and lc.state < BinaryState.READY:
@@ -102,7 +102,18 @@ def _fe() -> _Frontend:
 
 @mcp.tool()
 def open_binary(path: str) -> dict:
-    """Open a binary for analysis. Returns INSTANTLY — analysis runs in background."""
+    """Open a binary for analysis.
+
+    Returns instantly. Heavy analysis runs in the background worker;
+    poll progress with poll_analysis.
+
+    Args:
+        path: Filesystem path to the binary.
+
+    Returns:
+        Binary registration record with binary_id, sha256, lifecycle
+        state, function count, and PE mitigations when applicable.
+    """
     fe = _fe()
     target = Path(path).resolve()
     if not target.is_file():
@@ -142,7 +153,15 @@ def open_binary(path: str) -> dict:
 
 @mcp.tool()
 def close_binary(binary_id: str, save: bool = False) -> dict:
-    """Close a binary and remove from active sessions."""
+    """Close a binary and remove it from the active session registry.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        save: Persist analysis on close.
+
+    Returns:
+        Acknowledgement record with binary_id and a closed flag.
+    """
     fe = _fe()
     fe._binaries.pop(binary_id, None)
     return {"binary_id": binary_id, "closed": True}
@@ -150,7 +169,12 @@ def close_binary(binary_id: str, save: bool = False) -> dict:
 
 @mcp.tool()
 def list_binaries() -> list:
-    """List all registered binaries with their lifecycle state."""
+    """List all registered binaries with their current lifecycle state.
+
+    Returns:
+        List of binary records, each with id, sha256, path, state,
+        and function count.
+    """
     fe = _fe()
     result = []
     for bid, rec in fe._binaries.items():
@@ -165,7 +189,15 @@ def list_binaries() -> list:
 
 @mcp.tool()
 def binary_metadata(binary_id: str) -> dict:
-    """Return metadata for a binary."""
+    """Return metadata for a registered binary.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Binary record with current lifecycle state and function count,
+        or an error if the id is unknown.
+    """
     fe = _fe()
     rec = fe._binaries.get(binary_id)
     if rec is None:
@@ -180,7 +212,15 @@ def binary_metadata(binary_id: str) -> dict:
 
 @mcp.tool()
 def poll_analysis(binary_id: str) -> dict:
-    """Check analysis progress. Returns lifecycle state."""
+    """Check analysis progress for a binary.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Lifecycle state including analysis_ready, index_ready,
+        function_count, queue_depth, and any error.
+    """
     fe = _fe()
     lc = fe.lifecycle.get(binary_id)
     if lc is None:
@@ -204,7 +244,19 @@ def poll_analysis(binary_id: str) -> dict:
 
 @mcp.tool()
 def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dict:
-    """Decompile a function. Returns cached result or queues for background decompilation."""
+    """Decompile a function by address or name.
+
+    Returns the cached result instantly or queues a background
+    decompilation and returns a pending status.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...) or name.
+        max_lines: Maximum pseudocode lines to return.
+
+    Returns:
+        Decompilation result with pseudocode, or pending status.
+    """
     fe = _fe()
     sha = fe._sha(binary_id)
     cached = fe.cache.get_decompile(sha, address_or_name)
@@ -234,7 +286,23 @@ def list_functions(
     exclude_thunks: bool = False,
     exclude_libraries: bool = False,
 ) -> dict:
-    """List functions from the cached function index."""
+    """List functions from the cached function index.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        offset: Pagination offset.
+        limit: Maximum entries to return.
+        filter_text: Case-insensitive substring filter on function name.
+        order_by: Sort key — name, complexity_desc, or size_desc.
+        min_size_bytes: Minimum function size in bytes.
+        min_complexity: Minimum cyclomatic complexity.
+        exclude_thunks: Drop functions flagged as thunks.
+        exclude_libraries: Drop functions flagged as library code.
+
+    Returns:
+        Paginated function list with total, offset, limit, and entries,
+        or pending status when the index is not yet built.
+    """
     fe = _fe()
     sha = fe._sha(binary_id)
     index = fe.cache.get_index(sha)
@@ -271,7 +339,19 @@ def list_functions(
 
 @mcp.tool()
 def search_pattern(binary_id: str, pattern_type: str, name_pattern: str = "", limit: int = 50) -> dict:
-    """Search for vulnerability patterns. Returns cached results or queues analysis."""
+    """Search for vulnerability patterns across the binary.
+
+    Returns cached results or queues the analysis.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        pattern_type: Pattern identifier to search for.
+        name_pattern: Optional function-name filter.
+        limit: Maximum hits to return.
+
+    Returns:
+        Pattern hits with metadata, or pending status.
+    """
     fe = _fe()
     sha = fe._sha(binary_id)
     cached = fe.cache.get_pattern(sha, pattern_type)
@@ -286,7 +366,15 @@ def search_pattern(binary_id: str, pattern_type: str, name_pattern: str = "", li
 
 @mcp.tool()
 def binary_survey(binary_id: str, max_hotspots: int = 10) -> dict:
-    """One-call orientation from cached data."""
+    """Return a one-call orientation summary for the binary.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        max_hotspots: Maximum hotspot functions to surface.
+
+    Returns:
+        Orientation summary built from cached data, or pending status.
+    """
     fe = _fe()
     sha = fe._sha(binary_id)
     cached = fe.cache.get_result(sha, "binary_survey")
@@ -301,7 +389,20 @@ def binary_survey(binary_id: str, max_hotspots: int = 10) -> dict:
 
 @mcp.tool()
 def call_chain(binary_id: str, target_function: str, depth: int = 5, direction: str = "callers") -> dict:
-    """Walk call chains from cached index. No IDA needed if index is cached."""
+    """Walk caller or callee chains from the cached function index.
+
+    No IDA work is required when the index is already cached.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        target_function: Function name or address to root the walk.
+        depth: Maximum walk depth.
+        direction: 'callers' or 'callees'.
+
+    Returns:
+        Walk result with target, direction, node count, and chain,
+        or pending status when the index is not ready.
+    """
     fe = _fe()
     sha = fe._sha(binary_id)
     index = fe.cache.get_index(sha)
@@ -366,7 +467,7 @@ def call_chain(binary_id: str, target_function: str, depth: int = 5, direction: 
 
 
 def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> dict:
-    """Generic handler for IDA-dependent tools: cache hit or queue."""
+    """Generic dispatcher for IDA-dependent tools: cache hit or queue."""
     fe = _fe()
     sha = fe._sha(binary_id)
     lc = fe.lifecycle.get(binary_id)
@@ -376,6 +477,15 @@ def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> d
     if cached:
         cached["binary_id"] = binary_id
         cached["status"] = "ready"
+        # Check staleness — warn consumer if data may be outdated
+        safe_key = key.replace('/', '_').replace('\\', '_').replace(':', '_')
+        filename = f"{tool_name}_{safe_key}.json" if safe_key else f"{tool_name}.json"
+        cache_file = fe.settings.cache_dir / sha / "results" / filename
+        staleness = fe.cache.check_staleness(sha, cache_file)
+        if staleness["stale"]:
+            cached["_warning"] = "Result may be stale — a write operation occurred after this was cached."
+            cached["_stale"] = True
+            cached["_generation"] = staleness["generation"]
         return cached
     fe.cache.queue_request(sha, tool_name, {"binary_id": binary_id, **params})
     return fe._pending(binary_id, lc)
@@ -383,37 +493,82 @@ def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> d
 
 @mcp.tool()
 def xrefs_to(binary_id: str, address_or_name: str) -> dict:
-    """Return cross-references to an address or symbol."""
+    """Return cross-references to an address or symbol.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Target address (0x...) or symbol name.
+
+    Returns:
+        Cross-references with locations, or pending status.
+    """
     return _ida_tool("xrefs_to", binary_id, key=address_or_name, address_or_name=address_or_name)
 
 
 @mcp.tool()
 def xrefs_from(binary_id: str, address_or_name: str) -> dict:
-    """Return cross-references from a function."""
+    """Return cross-references from a function.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...) or name.
+
+    Returns:
+        Outgoing cross-references, or pending status.
+    """
     return _ida_tool("xrefs_from", binary_id, key=address_or_name, address_or_name=address_or_name)
 
 
 @mcp.tool()
 def imports(binary_id: str) -> dict:
-    """List imports for the binary."""
+    """List imports for the binary.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Imported symbols grouped by module, or pending status.
+    """
     return _ida_tool("imports", binary_id)
 
 
 @mcp.tool()
 def exports(binary_id: str) -> dict:
-    """List exports for the binary."""
+    """List exports for the binary.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Exported symbols, or pending status.
+    """
     return _ida_tool("exports", binary_id)
 
 
 @mcp.tool()
 def segments(binary_id: str) -> dict:
-    """List segments for the binary."""
+    """List segments for the binary.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Segment table with names, ranges, and permissions, or pending status.
+    """
     return _ida_tool("segments", binary_id)
 
 
 @mcp.tool()
 def checksec(binary_id: str) -> dict:
-    """Return binary mitigation summary."""
+    """Return a binary mitigation summary.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Mitigation flags (NX, ASLR, canary, etc.) for PE binaries,
+        or pending status while the worker analyzes other formats.
+    """
     fe = _fe()
     rec = fe._binaries.get(binary_id)
     if rec and "mitigations" in rec:
@@ -423,13 +578,31 @@ def checksec(binary_id: str) -> dict:
 
 @mcp.tool()
 def stack_frame(binary_id: str, address_or_name: str) -> dict:
-    """Return stack frame sizing information for a function."""
+    """Return stack frame sizing information for a function.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...) or name.
+
+    Returns:
+        Stack frame sizes and locals layout, or pending status.
+    """
     return _ida_tool("stack_frame", binary_id, key=address_or_name, address_or_name=address_or_name)
 
 
 @mcp.tool()
 def call_graph(binary_id: str, address_or_name: str, depth: int = 2, direction: str = "both") -> dict:
-    """Return a bounded call graph rooted at the requested function."""
+    """Return a bounded call graph rooted at a function.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Root function address (0x...) or name.
+        depth: Maximum traversal depth.
+        direction: 'callers', 'callees', or 'both'.
+
+    Returns:
+        Bounded call graph nodes and edges, or pending status.
+    """
     return _ida_tool(
         "call_graph", binary_id, key=address_or_name, address_or_name=address_or_name, depth=depth, direction=direction
     )
@@ -437,13 +610,32 @@ def call_graph(binary_id: str, address_or_name: str, depth: int = 2, direction: 
 
 @mcp.tool()
 def batch_decompile(binary_id: str, name_pattern: str = "", limit: int = 20, **kwargs: Any) -> dict:
-    """Decompile multiple functions selected by structured filters."""
+    """Decompile multiple functions selected by structured filters.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        name_pattern: Optional function-name filter.
+        limit: Maximum functions to decompile.
+        **kwargs: Additional structured filters forwarded to the worker.
+
+    Returns:
+        Per-function decompilation results, or pending status.
+    """
     return _ida_tool("batch_decompile", binary_id, name_pattern=name_pattern, limit=limit, **kwargs)
 
 
 @mcp.tool()
 def diff_binary(binary_id_old: str, binary_id_new: str) -> dict:
-    """Diff two analyzed binaries structurally by function metadata."""
+    """Diff two analyzed binaries structurally by function metadata.
+
+    Args:
+        binary_id_old: Handle for the older/baseline binary.
+        binary_id_new: Handle for the newer/target binary.
+
+    Returns:
+        Structural diff of added, removed, and changed functions,
+        or pending status.
+    """
     return _ida_tool("diff_binary", binary_id_old, key=binary_id_new, binary_id_new=binary_id_new)
 
 
@@ -451,7 +643,18 @@ def diff_binary(binary_id_old: str, binary_id_new: str) -> dict:
 def diff_function(
     binary_id_old: str, address_or_name_old: str, binary_id_new: str, address_or_name_new: str, max_lines: int = 500
 ) -> dict:
-    """Diff two functions using side-by-side pseudocode and unified diff."""
+    """Diff two functions using side-by-side pseudocode and unified diff.
+
+    Args:
+        binary_id_old: Handle for the older/baseline binary.
+        address_or_name_old: Function in the old binary.
+        binary_id_new: Handle for the newer/target binary.
+        address_or_name_new: Function in the new binary.
+        max_lines: Maximum pseudocode lines per side.
+
+    Returns:
+        Side-by-side pseudocode and unified diff, or pending status.
+    """
     key = f"{address_or_name_old}_{binary_id_new}_{address_or_name_new}"
     return _ida_tool(
         "diff_function",
@@ -468,7 +671,21 @@ def diff_function(
 def diff_survey(
     binary_id_old: str, binary_id_new: str, max_changed: int = 20, include_pseudocode_diff: bool = True
 ) -> dict:
-    """One-call N-day survey: structural diff + per-function diffs + security ranking."""
+    """Run a full N-day survey diff with security ranking.
+
+    Combines a structural diff, per-function diffs, and a security
+    ranking in a single call.
+
+    Args:
+        binary_id_old: Handle for the older/baseline binary.
+        binary_id_new: Handle for the newer/target binary.
+        max_changed: Maximum changed functions to include.
+        include_pseudocode_diff: Include pseudocode diffs per function.
+
+    Returns:
+        Aggregated survey of changed functions ranked by security
+        impact, or pending status.
+    """
     return _ida_tool(
         "diff_survey",
         binary_id_old,
@@ -489,7 +706,20 @@ def query_ctree(
     operand_type_is: str = "",
     limit: int = 50,
 ) -> dict:
-    """Query the decompiler CTree for call expressions matching structural predicates."""
+    """Query the decompiler CTree for call expressions matching predicates.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function to scan.
+        target_function: Optional callee filter.
+        argument_index: Optional argument index filter.
+        contains_operation: Optional operation substring filter.
+        operand_type_is: Optional operand-type filter.
+        limit: Maximum matches to return.
+
+    Returns:
+        Matching call expressions with locations, or pending status.
+    """
     return _ida_tool(
         "query_ctree",
         binary_id,
@@ -505,7 +735,16 @@ def query_ctree(
 
 @mcp.tool()
 def get_microcode(binary_id: str, address_or_name: str, maturity: str = "current") -> dict:
-    """Return textual Hex-Rays microcode for a function."""
+    """Return textual Hex-Rays microcode for a function.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...) or name.
+        maturity: Microcode maturity level (e.g., 'current').
+
+    Returns:
+        Textual microcode listing, or pending status.
+    """
     return _ida_tool(
         "get_microcode", binary_id, key=address_or_name, address_or_name=address_or_name, maturity=maturity
     )
@@ -520,7 +759,22 @@ def trace_dataflow(
     source_contains: list[str] | None = None,
     max_steps: int = 10,
 ) -> dict:
-    """Trace a sink argument backward through local assignment hops to a source term."""
+    """Trace a sink argument backward through local assignment hops.
+
+    Walks from the sink argument back toward an optional source term
+    via local assignment hops.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function containing the sink.
+        sink_function: Sink callee name.
+        sink_argument_index: Index of the sink argument to trace.
+        source_contains: Optional source-term substrings to terminate on.
+        max_steps: Maximum hops to follow.
+
+    Returns:
+        Backward trace with hop chain and source match, or pending status.
+    """
     key = f"{address_or_name}_{sink_function}_{sink_argument_index}"
     return _ida_tool(
         "trace_dataflow",
@@ -536,7 +790,15 @@ def trace_dataflow(
 
 @mcp.tool()
 def hexrays_warnings(binary_id: str, address_or_name: str) -> dict:
-    """Return Hex-Rays decompiler warnings for a function."""
+    """Return Hex-Rays decompiler warnings for a function.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...) or name.
+
+    Returns:
+        Decompiler warnings as confidence signals, or pending status.
+    """
     return _ida_tool("hexrays_warnings", binary_id, key=address_or_name, address_or_name=address_or_name)
 
 
@@ -549,7 +811,19 @@ def pseudocode_slice_view(
     context_lines: int = 5,
     max_slices: int = 10,
 ) -> dict:
-    """Return focused pseudocode slices around specific call sites or addresses."""
+    """Return focused pseudocode slices around call sites or addresses.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function to slice.
+        focus_callee: Optional callee to focus slices on.
+        focus_address: Optional address to focus slices on.
+        context_lines: Lines of context to include around each slice.
+        max_slices: Maximum slices to return.
+
+    Returns:
+        Focused pseudocode slices, or pending status.
+    """
     key = f"{address_or_name}_{focus_callee}_{focus_address}"
     return _ida_tool(
         "pseudocode_slice",
@@ -565,7 +839,18 @@ def pseudocode_slice_view(
 
 @mcp.tool()
 def def_use(binary_id: str, address_or_name: str, target_callee: str = "", max_instructions: int = 200) -> dict:
-    """Microcode-level use/def chain analysis."""
+    """Run microcode-level use/def chain analysis.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function to analyze.
+        target_callee: Optional callee to constrain the analysis.
+        max_instructions: Maximum instructions to inspect.
+
+    Returns:
+        Use/def chains showing instruction reads and writes,
+        or pending status.
+    """
     key = f"{address_or_name}_{target_callee}"
     return _ida_tool(
         "def_use",
@@ -579,37 +864,89 @@ def def_use(binary_id: str, address_or_name: str, target_callee: str = "", max_i
 
 @mcp.tool()
 def value_ranges(binary_id: str, address_or_name: str) -> dict:
-    """IR-backed value-range annotations from the decompiler's microcode analysis."""
+    """Return IR-backed value-range annotations for a function.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...) or name.
+
+    Returns:
+        Value-range annotations from microcode analysis, or pending status.
+    """
     return _ida_tool("value_ranges", binary_id, key=address_or_name, address_or_name=address_or_name)
 
 
 @mcp.tool()
 def classify_behavior(binary_id: str) -> dict:
-    """Map imported APIs to ATT&CK-aligned behavioral categories."""
+    """Map imported APIs to ATT&CK-aligned behavioral categories.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Behavior classification grouped by category, or pending status.
+    """
     return _ida_tool("classify_behavior", binary_id)
 
 
 @mcp.tool()
 def detect_anti_analysis(binary_id: str) -> dict:
-    """Detect anti-debug, anti-VM, and anti-sandbox techniques."""
+    """Detect anti-debug, anti-VM, and anti-sandbox techniques.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Detected anti-analysis techniques with locations, or pending status.
+    """
     return _ida_tool("detect_anti_analysis", binary_id)
 
 
 @mcp.tool()
 def entropy_analysis(binary_id: str) -> dict:
-    """Per-section Shannon entropy for packing/encryption detection."""
+    """Compute per-section Shannon entropy for packing detection.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Per-section entropy scores indicating packing or encryption,
+        or pending status.
+    """
     return _ida_tool("entropy_analysis", binary_id)
 
 
 @mcp.tool()
 def classify_strings(binary_id: str, limit: int = 200) -> dict:
-    """Classify string references by format: URLs, IPs, registry paths, file paths, base64."""
+    """Classify string references by format.
+
+    Categories include URLs, IPs, registry paths, file paths, and
+    base64 blobs.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        limit: Maximum strings to classify.
+
+    Returns:
+        String references grouped by classification, or pending status.
+    """
     return _ida_tool("classify_strings", binary_id, limit=limit)
 
 
 @mcp.tool()
 def detect_dynamic_resolution(binary_id: str, limit: int = 50) -> dict:
-    """Find GetProcAddress/LoadLibrary calls and extract dynamically resolved API names."""
+    """Find dynamic API resolution and extract resolved names.
+
+    Locates GetProcAddress and LoadLibrary call sites and extracts
+    the dynamically resolved API names.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        limit: Maximum resolutions to return.
+
+    Returns:
+        Dynamic resolution sites with resolved API names, or pending status.
+    """
     return _ida_tool("detect_dynamic_resolution", binary_id, limit=limit)
 
 
@@ -617,7 +954,19 @@ def detect_dynamic_resolution(binary_id: str, limit: int = 50) -> dict:
 def path_feasibility(
     binary_id: str, source_address: str, sink_address: str, timeout_seconds: int = 60, max_steps: int = 200000
 ) -> dict:
-    """Check path feasibility using angr symbolic execution."""
+    """Check feasibility of a source-to-sink path with angr.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        source_address: Symbolic-execution start address.
+        sink_address: Target address to reach.
+        timeout_seconds: Per-call symbolic execution timeout.
+        max_steps: Maximum symbolic steps before giving up.
+
+    Returns:
+        Feasibility verdict with witness state when reachable,
+        or pending status.
+    """
     key = f"{source_address}_{sink_address}"
     return _ida_tool(
         "path_feasibility",
@@ -639,7 +988,19 @@ def find_paths(
     timeout_seconds: int = 60,
     max_paths: int = 3,
 ) -> dict:
-    """Find execution paths between two points using angr exploration."""
+    """Find execution paths between two points using angr exploration.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        from_address: Path start address.
+        to_address: Path end address.
+        avoid_addresses: Addresses to avoid during exploration.
+        timeout_seconds: Per-call exploration timeout.
+        max_paths: Maximum distinct paths to return.
+
+    Returns:
+        Discovered execution paths, or pending status.
+    """
     key = f"{from_address}_{to_address}"
     return _ida_tool(
         "find_paths",
@@ -670,7 +1031,20 @@ def _mutate(binary_id: str, mutation_type: str, agent_id: str = "", **params: An
 
 @mcp.tool()
 def rename_function(binary_id: str, address: str, new_name: str, agent_id: str = "") -> dict:
-    """Rename a function. Queued — invalidates decompile cache for this function and all callers."""
+    """Rename a function.
+
+    Queued — invalidates the decompile cache for this function and
+    all of its callers.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address: Function address.
+        new_name: New function name.
+        agent_id: Optional caller identifier for audit.
+
+    Returns:
+        Mutation ticket for polling with poll_mutation.
+    """
     return _mutate(binary_id, "rename_function", agent_id, address=address, new_name=new_name)
 
 
@@ -678,7 +1052,20 @@ def rename_function(binary_id: str, address: str, new_name: str, agent_id: str =
 def rename_variable(
     binary_id: str, function_address: str, old_name: str, new_name: str, agent_id: str = ""
 ) -> dict:
-    """Rename a local variable. Queued — invalidates decompile cache for the function."""
+    """Rename a local variable.
+
+    Queued — invalidates the decompile cache for the function.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        function_address: Address of the containing function.
+        old_name: Current variable name.
+        new_name: New variable name.
+        agent_id: Optional caller identifier for audit.
+
+    Returns:
+        Mutation ticket for polling with poll_mutation.
+    """
     return _mutate(
         binary_id, "rename_variable", agent_id,
         function_address=function_address, old_name=old_name, new_name=new_name,
@@ -687,7 +1074,19 @@ def rename_variable(
 
 @mcp.tool()
 def set_comment(binary_id: str, address: str, comment: str, agent_id: str = "") -> dict:
-    """Set a comment at an address. Queued — invalidates decompile cache for the function."""
+    """Set a comment at an address.
+
+    Queued — invalidates the decompile cache for the containing function.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address: Address to annotate.
+        comment: Comment text.
+        agent_id: Optional caller identifier for audit.
+
+    Returns:
+        Mutation ticket for polling with poll_mutation.
+    """
     return _mutate(binary_id, "set_comment", agent_id, address=address, comment=comment)
 
 
@@ -695,7 +1094,19 @@ def set_comment(binary_id: str, address: str, comment: str, agent_id: str = "") 
 def set_function_type(
     binary_id: str, function_address: str, prototype: str, agent_id: str = ""
 ) -> dict:
-    """Set a function's prototype/type. Queued — invalidates decompile cache."""
+    """Set a function's prototype/type.
+
+    Queued — invalidates the decompile cache.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        function_address: Address of the function.
+        prototype: New C prototype string.
+        agent_id: Optional caller identifier for audit.
+
+    Returns:
+        Mutation ticket for polling with poll_mutation.
+    """
     return _mutate(
         binary_id, "set_function_type", agent_id,
         function_address=function_address, prototype=prototype,
@@ -706,7 +1117,20 @@ def set_function_type(
 def set_variable_type(
     binary_id: str, function_address: str, variable_name: str, new_type: str, agent_id: str = ""
 ) -> dict:
-    """Set a local variable's type. Queued — invalidates decompile cache."""
+    """Set a local variable's type.
+
+    Queued — invalidates the decompile cache.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        function_address: Address of the containing function.
+        variable_name: Variable to retype.
+        new_type: New C type string.
+        agent_id: Optional caller identifier for audit.
+
+    Returns:
+        Mutation ticket for polling with poll_mutation.
+    """
     return _mutate(
         binary_id, "set_variable_type", agent_id,
         function_address=function_address, variable_name=variable_name, new_type=new_type,
@@ -715,13 +1139,33 @@ def set_variable_type(
 
 @mcp.tool()
 def patch_bytes(binary_id: str, address: str, hex_bytes: str, agent_id: str = "") -> dict:
-    """Patch bytes at an address. Queued — invalidates decompile cache for containing function."""
+    """Patch bytes at an address.
+
+    Queued — invalidates the decompile cache for the containing function.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address: Address to patch.
+        hex_bytes: Replacement bytes as a hex string.
+        agent_id: Optional caller identifier for audit.
+
+    Returns:
+        Mutation ticket for polling with poll_mutation.
+    """
     return _mutate(binary_id, "patch_bytes", agent_id, address=address, hex_bytes=hex_bytes)
 
 
 @mcp.tool()
 def poll_mutation(binary_id: str, ticket_id: str) -> dict:
-    """Check if a mutation has been applied. Returns result or 'queued'."""
+    """Check whether a queued mutation has been applied.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        ticket_id: Ticket returned by a write tool.
+
+    Returns:
+        Mutation result if applied, otherwise a 'queued' status.
+    """
     fe = _fe()
     sha = fe._sha(binary_id)
     from .mutations import MutationQueue
@@ -735,7 +1179,17 @@ def poll_mutation(binary_id: str, ticket_id: str) -> dict:
 
 @mcp.tool()
 def get_generation(binary_id: str) -> dict:
-    """Get the current generation counter. Increments on every write operation."""
+    """Get the current generation counter for a binary.
+
+    The counter increments on every write operation and is used by
+    cache consumers to detect stale results.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Current generation counter for the binary.
+    """
     fe = _fe()
     sha = fe._sha(binary_id)
     from .mutations import Generation

@@ -1,3 +1,9 @@
+"""Runtime configuration loaded from environment variables.
+
+Resolves IDA, project, and cache directory paths plus a few tunables
+from ``IDA_HEADLESS_MCP_*`` environment variables, applying defaults
+when they are unset.
+"""
 from __future__ import annotations
 
 import os
@@ -9,6 +15,16 @@ __all__ = ["Settings", "load_settings"]
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    """Resolved runtime settings for the IDA Headless MCP server.
+
+    Attributes:
+        ida_dir: Filesystem path to the IDA installation directory.
+        project_dir: Directory used to store IDA projects.
+        cache_dir: Directory used for the shared analysis cache.
+        max_binary_size_mb: Upper bound on accepted binary size, in megabytes.
+        idle_timeout_s: Seconds an idle binary stays loaded before being closed.
+        max_concurrent_ida: Maximum number of concurrent IDA processes.
+    """
     ida_dir: Path
     project_dir: Path
     cache_dir: Path
@@ -18,11 +34,32 @@ class Settings:
 
 
 def _env_path(name: str, default: Path) -> Path:
+    """Read a path from an environment variable, falling back to ``default``.
+
+    Args:
+        name: Environment variable name.
+        default: Path returned when the variable is unset or blank.
+
+    Returns:
+        The configured path, or ``default`` when no override is set.
+    """
     raw = os.environ.get(name, "").strip()
     return Path(raw) if raw else default
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read an integer from an environment variable, falling back to ``default``.
+
+    Args:
+        name: Environment variable name.
+        default: Value returned when the variable is unset or blank.
+
+    Returns:
+        The parsed integer, or ``default`` when no override is set.
+
+    Raises:
+        ValueError: If the variable is set to a non-integer value.
+    """
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
@@ -33,6 +70,14 @@ def _env_int(name: str, default: int) -> int:
 
 
 def load_settings() -> Settings:
+    """Build a :class:`Settings` instance from environment variables.
+
+    Resolves project and cache directories to absolute paths and creates
+    them on disk if they do not already exist.
+
+    Returns:
+        A populated :class:`Settings` value with all directories materialised.
+    """
     ida_dir = _env_path("IDA_HEADLESS_MCP_IDA_DIR", Path(r"C:/Program Files/IDA Professional 9.0"))
     project_dir = _env_path("IDA_HEADLESS_MCP_PROJECT_DIR", Path("projects"))
     cache_dir = _env_path("IDA_HEADLESS_MCP_CACHE_DIR", Path("cache"))

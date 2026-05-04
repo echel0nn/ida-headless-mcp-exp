@@ -313,9 +313,16 @@ def _summary_signal(diff_text: str, added_calls: list[str], added_strings: list[
 
 
 def _structure_similarity(old: FunctionIndexEntry, new: FunctionIndexEntry) -> float:
-    """Score structural similarity between two functions (0.0-1.0).
+    """Score structural similarity between two functions.
 
     Used for matching renamed/stripped functions by their shape.
+
+    Args:
+        old: Function entry from the old binary.
+        new: Function entry from the new binary.
+
+    Returns:
+        A score in the range ``0.0`` to ``1.0`` where higher means more similar.
     """
     score = 1.0
     # Size similarity (within 50% = ok)
@@ -349,9 +356,15 @@ DANGEROUS_SINKS = {
 
 
 def rank_security_relevance(pair: FunctionPairMatch) -> float:
-    """Score a changed function's security relevance (0.0 = irrelevant, 10.0 = critical).
+    """Score a changed function's security relevance.
 
     Higher scores mean the change is more likely to be a security fix.
+
+    Args:
+        pair: Matched old/new function pair to evaluate.
+
+    Returns:
+        A score from ``0.0`` (irrelevant) to ``10.0`` (critical).
     """
     score = 0.0
     # Bounds/validation callees added
