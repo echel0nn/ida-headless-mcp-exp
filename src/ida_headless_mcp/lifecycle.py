@@ -181,22 +181,17 @@ class LifecycleManager:
             lc.error = f"Failed to start idat64: {exc}"
             self._save(lc)
 
-    def _start_decompile_worker(self, lc: BinaryLifecycle) -> None:
-        """Spawn background decompile worker for this binary."""
+    def _start_binary_worker(self, lc: BinaryLifecycle) -> None:
+        """Spawn the unified binary worker for this binary."""
         if lc.decompile_worker_pid is not None and _pid_alive(lc.decompile_worker_pid):
             return  # already running
-
-        workspace_binary = self.cache_dir / lc.sha256 / "workspace" / lc.root_filename
-        cache_sha_dir = self.cache_dir / lc.sha256
-        if not workspace_binary.exists():
-            return
 
         try:
             proc = subprocess.Popen(
                 [
-                    sys.executable, "-m", "ida_headless_mcp.decompile_worker",
-                    "--workspace", str(workspace_binary),
-                    "--cache-dir", str(cache_sha_dir),
+                    sys.executable, "-m", "ida_headless_mcp.binary_worker",
+                    "--sha256", lc.sha256,
+                    "--cache-dir", str(self.cache_dir),
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -229,7 +224,7 @@ class LifecycleManager:
                 lc.state = BinaryState.READY
                 lc.analyzer_pid = None
                 self._save(lc)
-                self._start_decompile_worker(lc)
+                self._start_binary_worker(lc)
             elif lc.analyzer_pid is not None:
                 # Check if the process is still alive
                 if not _pid_alive(lc.analyzer_pid):
