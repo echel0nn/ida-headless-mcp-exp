@@ -38,7 +38,11 @@ class _Frontend:
     def __init__(self) -> None:
         self.settings = load_settings()
         self.cache = CacheReader(self.settings.cache_dir)
-        self.lifecycle = LifecycleManager(self.settings.cache_dir, self.settings.ida_dir)
+        self.lifecycle = LifecycleManager(
+            self.settings.cache_dir,
+            self.settings.ida_dir,
+            max_workers=self.settings.max_concurrent_ida,
+        )
         self.lifecycle.recover_all()
         self._binaries: dict[str, dict[str, Any]] = {}
         # Rebuild binary registry from recovered lifecycles
@@ -475,6 +479,8 @@ def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> d
     fe = _fe()
     sha = fe._sha(binary_id)
     lc = fe.lifecycle.get(binary_id)
+    if lc:
+        fe.lifecycle._worker_activity[lc.sha256] = __import__('time').monotonic()
     if lc and lc.state < BinaryState.READY:
         return fe._pending(binary_id, lc)
     cached = fe.cache.get_result(sha, tool_name, key)

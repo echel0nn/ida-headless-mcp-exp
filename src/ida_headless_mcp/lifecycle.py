@@ -78,11 +78,13 @@ class BinaryLifecycle:
 class LifecycleManager:
     """Manages binary lifecycles with persistent state and background analysis."""
 
-    def __init__(self, cache_dir: Path, ida_dir: Path) -> None:
+    def __init__(self, cache_dir: Path, ida_dir: Path, max_workers: int = 4) -> None:
         self.cache_dir = cache_dir
         self.ida_dir = ida_dir
+        self.max_workers = max_workers
         self._lifecycles: dict[str, BinaryLifecycle] = {}
         self._worker_procs: dict[str, subprocess.Popen] = {}
+        self._worker_activity: dict[str, float] = {}  # sha256 -> last activity time
 
     # ------------------------------------------------------------------
     # State persistence
@@ -200,15 +202,45 @@ class LifecycleManager:
     def _start_binary_worker(self, lc: BinaryLifecycle) -> None:
         """Spawn a binary_worker process for this binary.
 
-        The worker opens the .i64, builds the index, and watches
-        request_queue.jsonl + write_queue.jsonl for work.
+        Enforces max_workers limit. If at capacity, evicts the
+        least-recently-active worker to make room.
         """
+        # Already running?
         existing = self._worker_procs.get(lc.sha256)
         if existing is not None and existing.poll() is None:
+            self._worker_activity[lc.sha256] = time.monotonic()
             return
         if lc.decompile_worker_pid is not None and _pid_alive(lc.decompile_worker_pid):
             return
 
+        # Enforce max_workers — evict LRU if at capacity
+        alive = {
+            sha: proc for sha, proc in self._worker_procs.items()
+            if proc.poll() is None
+        }
+        if len(alive) >= self.max_workers:
+            # Find least recently active worker
+            lru_sha = min(
+                alive.keys(),
+                key=lambda s: self._worker_activity.get(s, 0),
+            )
+            lru_proc = alive[lru_sha]
+            try:
+                lru_proc.terminate()
+                lru_proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                lru_proc.kill()
+            del self._worker_procs[lru_sha]
+            self._worker_activity.pop(lru_sha, None)
+            # Downgrade evicted binary's state back to READY
+            for evicted in self._lifecycles.values():
+                if evicted.sha256 == lru_sha:
+                    evicted.state = BinaryState.READY
+                    evicted.decompile_worker_pid = None
+                    self._save(evicted)
+                    break
+
+        # Spawn new worker
         try:
             proc = subprocess.Popen(
                 [
@@ -220,6 +252,7 @@ class LifecycleManager:
                 stderr=subprocess.DEVNULL,
             )
             self._worker_procs[lc.sha256] = proc
+            self._worker_activity[lc.sha256] = time.monotonic()
             lc.decompile_worker_pid = proc.pid
             self._save(lc)
         except OSError:
