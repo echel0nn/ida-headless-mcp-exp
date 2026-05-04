@@ -87,6 +87,16 @@ def bootstrap_ida(settings: Settings) -> ModuleType:
     """Ensure the local IDA idalib Python package is usable and import it.
 
     This function must run before any ``ida_*`` or ``idautils`` imports.
+
+    Args:
+        settings: Resolved settings, including the IDA install directory.
+
+    Returns:
+        The imported ``ida`` module.
+
+    Raises:
+        FileNotFoundError: If the IDA install is missing required files.
+        RuntimeError: If pip install or activation steps fail.
     """
     _ensure_ida_install(settings)
     os.environ.setdefault("IDADIR", str(settings.ida_dir))

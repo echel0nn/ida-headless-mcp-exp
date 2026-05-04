@@ -57,7 +57,19 @@ def run_worker() -> None:
 
 
 def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
-    """Route a method call to the session manager."""
+    """Route a JSON-RPC method call to the session manager.
+
+    Args:
+        mgr: The session manager that owns the loaded binaries.
+        method: JSON-RPC method name.
+        params: JSON-RPC parameters.
+
+    Returns:
+        The result of the dispatched call.
+
+    Raises:
+        ValueError: If ``method`` is not in the dispatch table.
+    """
     # Direct method mapping — every public method on the manager
     dispatch_table = {
         "open_binary": lambda p: _serialize_record(mgr.open_binary(p["path"])),

@@ -29,10 +29,18 @@ __all__ = ["requires"]
 
 
 def requires(min_state: BinaryState | None):
-    """Decorator: declare the minimum lifecycle state a tool method needs.
+    """Declare the minimum lifecycle state a tool method needs.
 
-    If the binary hasn't reached that state, returns {"status": "pending"}
-    instantly. If it has, promotes to the required state and runs the method.
+    If the binary hasn't reached that state, the wrapped method returns
+    ``{"status": "pending"}`` immediately. Otherwise it promotes the binary
+    to the required state and runs the underlying method.
+
+    Args:
+        min_state: Minimum :class:`BinaryState` required, or ``None`` when
+            the tool does not need IDA at all.
+
+    Returns:
+        A decorator that wraps a tool method on ``SessionManager``.
     """
     def decorator(method):
         @functools.wraps(method)

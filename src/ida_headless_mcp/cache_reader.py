@@ -141,6 +141,44 @@ class CacheReader:
         with queue.open("a", encoding="utf-8") as fh:
             fh.write(entry + "\n")
 
+    def check_staleness(self, sha256: str, cache_file: Path) -> dict[str, Any]:
+        """Check if a cache file is stale relative to the generation counter.
+
+        A file is stale if it was written BEFORE the last generation bump.
+
+        Args:
+            sha256: Hash identifying the binary.
+            cache_file: Path to the cache file to check.
+
+        Returns:
+            Staleness info to embed in every read response.
+        """
+        gen_path = self.cache_dir / sha256 / "generation.txt"
+        if not gen_path.exists():
+            # No writes have ever happened — nothing is stale
+            return {"stale": False, "generation": 0, "cache_generation": 0}
+
+        try:
+            current_gen = int(gen_path.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            return {"stale": False, "generation": 0, "cache_generation": 0}
+
+        if not cache_file.exists():
+            return {"stale": True, "generation": current_gen, "cache_generation": -1}
+
+        # Compare: gen file mtime vs cache file mtime
+        # If gen file is newer than cache file, cache is stale
+        gen_mtime = gen_path.stat().st_mtime
+        cache_mtime = cache_file.stat().st_mtime
+        is_stale = gen_mtime > cache_mtime
+
+        return {
+            "stale": is_stale,
+            "generation": current_gen,
+            "cache_mtime": cache_mtime,
+            "generation_mtime": gen_mtime,
+        }
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

@@ -20,7 +20,13 @@ POLL_INTERVAL = 0.3
 
 
 def run(workspace_binary: Path, cache_dir: Path, max_lines: int = 200) -> None:
-    """Main loop: watch queue, decompile, write cache."""
+    """Run the worker loop: watch the queue, decompile, write cache.
+
+    Args:
+        workspace_binary: Path to the binary to open in IDA.
+        cache_dir: Cache directory where decompile results are written.
+        max_lines: Maximum pseudocode lines retained per function.
+    """
     # Bootstrap IDA
     src_dir = Path(__file__).resolve().parent.parent
     if str(src_dir) not in sys.path:

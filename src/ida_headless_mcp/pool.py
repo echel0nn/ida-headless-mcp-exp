@@ -28,7 +28,20 @@ class _Worker:
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def send(self, method: str, params: dict, msg_id: int) -> dict:
-        """Send a JSON-RPC request and wait for the response."""
+        """Send a JSON-RPC request and wait for the response.
+
+        Args:
+            method: JSON-RPC method name.
+            params: JSON-RPC parameters.
+            msg_id: Request id used to match the response.
+
+        Returns:
+            The decoded JSON-RPC response with matching ``id``.
+
+        Raises:
+            RuntimeError: If the worker process dies or closes stdout.
+            TimeoutError: If no matching response arrives within the deadline.
+        """
         with self._lock:
             msg = json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
             self.proc.stdin.write((msg + "\n").encode("utf-8"))
@@ -83,7 +96,18 @@ class WorkerPool:
         self._lock = threading.Lock()
 
     def call(self, method: str, params: dict[str, Any]) -> Any:
-        """Route a method call to the appropriate worker."""
+        """Route a method call to the appropriate worker.
+
+        Args:
+            method: JSON-RPC method name.
+            params: JSON-RPC parameters; ``binary_id`` selects worker affinity.
+
+        Returns:
+            The ``result`` field of the worker's JSON-RPC response.
+
+        Raises:
+            RuntimeError: If the worker returns an error.
+        """
         binary_id = params.get("binary_id") or params.get("binary_id_old")
 
         with self._lock:
@@ -132,7 +156,20 @@ class WorkerPool:
     # ------------------------------------------------------------------
 
     def _get_worker(self, method: str, params: dict, binary_id: str | None) -> _Worker:
-        """Find the best worker for this request. Must be called under self._lock."""
+        """Find the best worker for this request.
+
+        Must be called under ``self._lock``. Honors binary_id affinity, prefers
+        idle workers, spawns new workers up to ``max_workers``, and finally
+        evicts the least-recently-active worker.
+
+        Args:
+            method: JSON-RPC method name.
+            params: JSON-RPC parameters.
+            binary_id: Affinity key; if a live worker owns this binary, return it.
+
+        Returns:
+            A live ``_Worker`` selected for the request.
+        """
         # 1. Check affinity
         if binary_id and binary_id in self._affinity:
             w = self._affinity[binary_id]
@@ -168,7 +205,13 @@ class WorkerPool:
         return victim
 
     def _spawn(self) -> _Worker:
-        """Spawn a new worker subprocess. Must be called under self._lock."""
+        """Spawn a new worker subprocess.
+
+        Must be called under ``self._lock``.
+
+        Returns:
+            The newly spawned ``_Worker``.
+        """
         env = {
             **os.environ,
             "PYTHONPATH": str(Path(__file__).resolve().parent.parent),

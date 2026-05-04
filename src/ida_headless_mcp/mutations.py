@@ -62,7 +62,20 @@ class MutationQueue:
         params: dict[str, Any],
         agent_id: str = "",
     ) -> dict[str, Any]:
-        """Queue a mutation. Returns immediately with a ticket."""
+        """Queue a mutation for the binary worker.
+
+        Returns immediately with a ticket; the worker processes the mutation
+        asynchronously and writes the outcome under ``write_results/``.
+
+        Args:
+            sha256: Hash identifying the binary whose cache will be mutated.
+            mutation_type: Mutation kind (e.g. ``rename_function``, ``set_comment``).
+            params: Mutation-specific parameters.
+            agent_id: Optional identifier of the calling agent.
+
+        Returns:
+            Ticket dict containing ``ticket_id``, ``status``, and ``message``.
+        """
         queue_path = self.cache_dir / sha256 / self.QUEUE_FILENAME
         queue_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -85,7 +98,15 @@ class MutationQueue:
         }
 
     def poll_result(self, sha256: str, ticket_id: str) -> dict[str, Any] | None:
-        """Check if a mutation has been processed."""
+        """Check if a mutation has been processed.
+
+        Args:
+            sha256: Hash identifying the binary.
+            ticket_id: Ticket returned by :meth:`submit`.
+
+        Returns:
+            Recorded write result, or ``None`` if processing is still pending.
+        """
         result_path = (
             self.cache_dir / sha256 / "write_results" / f"{ticket_id}.json"
         )
@@ -100,11 +121,19 @@ class MutationQueue:
 def invalidate_for_rename(sha_dir: Path, address: str, index_data: list) -> list[str]:
     """Delete cache entries affected by a function rename.
 
-    Affected:
-      - The renamed function's decompile cache
-      - All callers' decompile caches (they reference the old name)
-      - The function index (names changed)
-      - Pattern results (may reference old name)
+    The following entries are removed:
+      - The renamed function's decompile cache.
+      - All callers' decompile caches (they reference the old name).
+      - The function index (names changed).
+      - Pattern results (may reference the old name).
+
+    Args:
+        sha_dir: Per-binary cache directory.
+        address: Address of the renamed function.
+        index_data: Cached function index entries used to locate callers.
+
+    Returns:
+        Names of the cache entries that were invalidated.
     """
     invalidated: list[str] = []
     decompile_dir = sha_dir / "decompile"
@@ -154,9 +183,17 @@ def invalidate_for_rename(sha_dir: Path, address: str, index_data: list) -> list
 def invalidate_for_patch(sha_dir: Path, address: str, index_data: list) -> list[str]:
     """Delete cache entries affected by a byte patch.
 
-    Affected:
-      - The containing function's decompile cache
-      - Pattern results (code changed)
+    The following entries are removed:
+      - The containing function's decompile cache.
+      - Pattern results (code changed).
+
+    Args:
+        sha_dir: Per-binary cache directory.
+        address: Address of the patched bytes.
+        index_data: Cached function index entries used to locate the containing function.
+
+    Returns:
+        Names of the cache entries that were invalidated.
     """
     invalidated: list[str] = []
     decompile_dir = sha_dir / "decompile"
@@ -194,7 +231,17 @@ def invalidate_for_patch(sha_dir: Path, address: str, index_data: list) -> list[
 
 
 def invalidate_for_comment(sha_dir: Path, address: str) -> list[str]:
-    """Delete cache entries affected by a comment change. Only the function's decompile."""
+    """Delete cache entries affected by a comment change.
+
+    Only the containing function's decompile output is invalidated.
+
+    Args:
+        sha_dir: Per-binary cache directory.
+        address: Address where the comment was set (may include ``+offset``).
+
+    Returns:
+        Names of the cache entries that were invalidated.
+    """
     invalidated: list[str] = []
     decompile_dir = sha_dir / "decompile"
     # Comments only affect the decompile output of the containing function
