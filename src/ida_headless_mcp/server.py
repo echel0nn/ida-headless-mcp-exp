@@ -10,7 +10,12 @@ from .config import load_settings
 
 __all__ = ["create_server", "main"]
 
-mcp = FastMCP("IDA Headless MCP", json_response=True)
+mcp = FastMCP(
+    "IDA Headless MCP",
+    json_response=True,
+    host="127.0.0.1",
+    port=int(os.environ.get("IDA_HEADLESS_MCP_PORT", "18820")),
+)
 
 _pool_mode = os.environ.get("IDA_HEADLESS_MCP_POOL", "").strip().lower() in ("1", "true", "yes")
 
@@ -448,7 +453,8 @@ def create_server() -> FastMCP:
 
 
 def main() -> None:
-    mcp.run()
+    transport = os.environ.get("IDA_HEADLESS_MCP_TRANSPORT", "stdio")
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":

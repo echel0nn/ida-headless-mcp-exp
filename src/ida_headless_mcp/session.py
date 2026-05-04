@@ -11,6 +11,7 @@ from .bootstrap import bootstrap_ida
 from .config import Settings
 from .diff import diff_binary_indexes, diff_function_payloads
 from .function_index import FunctionIndex, build_function_index
+from .guards import requires
 from .hexrays_analysis import (
     decompile_cfunc,
     get_argument_names,
@@ -219,6 +220,7 @@ class IDABinarySessionManager:
             'error': lc.error,
         }
 
+    @requires(BinaryState.INDEXED)
     def list_functions(
         self,
         binary_id: str,
@@ -324,8 +326,8 @@ class IDABinarySessionManager:
         with queue_path.open("a", encoding="utf-8") as fh:
             fh.write(entry + "\n")
 
+    @requires(BinaryState.ACTIVE)
     def xrefs_to(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_funcs
         import idautils
 
@@ -342,8 +344,8 @@ class IDABinarySessionManager:
             )
         return {"binary_id": binary_id, "address": f"0x{ea:x}", "total": len(refs), "xrefs": refs}
 
+    @requires(BinaryState.ACTIVE)
     def xrefs_from(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_funcs
         import idautils
 
@@ -373,8 +375,8 @@ class IDABinarySessionManager:
             "xrefs": refs,
         }
 
+    @requires(BinaryState.ACTIVE)
     def imports(self, binary_id: str) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_nalt
 
         results: list[dict[str, Any]] = []
@@ -396,8 +398,8 @@ class IDABinarySessionManager:
             ida_nalt.enum_import_names(i, _cb)
         return {"binary_id": binary_id, "total": len(results), "imports": results}
 
+    @requires(BinaryState.ACTIVE)
     def exports(self, binary_id: str) -> dict[str, Any]:
-        self._activate(binary_id)
         import idautils
 
         results = [
@@ -410,16 +412,18 @@ class IDABinarySessionManager:
         ]
         return {"binary_id": binary_id, "total": len(results), "exports": results}
 
+    @requires(BinaryState.ACTIVE)
     def segments(self, binary_id: str) -> dict[str, Any]:
         rec = self._require(binary_id)
         return {"binary_id": binary_id, "total": len(rec.sections), "segments": rec.sections}
 
+    @requires(BinaryState.ACTIVE)
     def checksec(self, binary_id: str) -> dict[str, Any]:
         rec = self._require(binary_id)
         return {"binary_id": binary_id, **rec.mitigations}
 
+    @requires(BinaryState.ACTIVE)
     def stack_frame(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_funcs
         import idc
 
@@ -438,6 +442,7 @@ class IDABinarySessionManager:
             "args_size": idc.get_frame_args_size(start_ea),
         }
 
+    @requires(BinaryState.ACTIVE)
     def call_graph(
         self,
         binary_id: str,
@@ -445,7 +450,6 @@ class IDABinarySessionManager:
         depth: int = 2,
         direction: str = "both",
     ) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_funcs
         import idautils
 
@@ -526,6 +530,7 @@ class IDABinarySessionManager:
             "edges": dedup_edges,
         }
 
+    @requires(BinaryState.INDEXED)
     def batch_decompile(
         self,
         binary_id: str,
@@ -545,8 +550,6 @@ class IDABinarySessionManager:
         limit: int = 20,
         max_lines: int = 250,
     ) -> dict[str, Any]:
-        self._activate(binary_id)
-        self._ensure_indexed(binary_id)
         result = self._indices[binary_id].query(
             name_pattern=name_pattern,
             callers_of=callers_of,
@@ -577,6 +580,7 @@ class IDABinarySessionManager:
 
         return payload
 
+    @requires(BinaryState.INDEXED)
     def search_pattern(
         self,
         binary_id: str,
@@ -586,7 +590,6 @@ class IDABinarySessionManager:
         limit: int = 50,
         max_lines: int = 120,
     ) -> dict[str, Any]:
-        self._activate(binary_id)
         rec = self._require(binary_id)
         pattern = pattern_type.strip().lower()
 
@@ -595,7 +598,6 @@ class IDABinarySessionManager:
             cache_path = self._pattern_cache_path(rec.sha256, pattern)
             if cache_path.exists():
                 return json.loads(cache_path.read_text(encoding='utf-8'))
-        self._ensure_indexed(binary_id)
         query = self._indices[binary_id].query(
             name_pattern=name_pattern,
             exclude_thunks=True,
@@ -930,6 +932,7 @@ class IDABinarySessionManager:
 
         return payload
 
+    @requires(BinaryState.INDEXED)
     def diff_binary(self, binary_id_old: str, binary_id_new: str) -> dict[str, Any]:
         self._activate(binary_id_old)
         old_entries = self._indices[binary_id_old].entries
@@ -940,6 +943,7 @@ class IDABinarySessionManager:
 
         return payload
 
+    @requires(BinaryState.INDEXED)
     def diff_function(
         self,
         binary_id_old: str,
@@ -958,6 +962,7 @@ class IDABinarySessionManager:
 
         return payload
 
+    @requires(BinaryState.INDEXED)
     def diff_survey(
         self,
         binary_id_old: str,
@@ -1006,6 +1011,7 @@ class IDABinarySessionManager:
             "changed": enriched,
         }
 
+    @requires(BinaryState.ACTIVE)
     def query_ctree(
         self,
         binary_id: str,
@@ -1017,7 +1023,6 @@ class IDABinarySessionManager:
         operand_type_is: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -1037,6 +1042,7 @@ class IDABinarySessionManager:
 
         return payload
 
+    @requires(BinaryState.ACTIVE)
     def get_microcode(
         self,
         binary_id: str,
@@ -1044,7 +1050,6 @@ class IDABinarySessionManager:
         *,
         maturity: str = "current",
     ) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -1057,6 +1062,7 @@ class IDABinarySessionManager:
 
         return payload
 
+    @requires(BinaryState.ACTIVE)
     def trace_dataflow(
         self,
         binary_id: str,
@@ -1067,7 +1073,6 @@ class IDABinarySessionManager:
         source_contains: list[str] | None = None,
         max_steps: int = 10,
     ) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -1086,8 +1091,8 @@ class IDABinarySessionManager:
 
         return payload
 
+    @requires(BinaryState.ACTIVE)
     def hexrays_warnings(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -1099,6 +1104,7 @@ class IDABinarySessionManager:
         result["binary_id"] = binary_id
         return result
 
+    @requires(BinaryState.ACTIVE)
     def pseudocode_slice_fn(
         self,
         binary_id: str,
@@ -1109,7 +1115,6 @@ class IDABinarySessionManager:
         context_lines: int = 5,
         max_slices: int = 10,
     ) -> dict[str, Any]:
-        self._activate(binary_id)
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -1127,6 +1132,7 @@ class IDABinarySessionManager:
         result["binary_id"] = binary_id
         return result
 
+    @requires(BinaryState.ACTIVE)
     def def_use(
         self,
         binary_id: str,
@@ -1136,7 +1142,6 @@ class IDABinarySessionManager:
         max_instructions: int = 200,
     ) -> dict[str, Any]:
         """Microcode-level use/def analysis for a function."""
-        self._activate(binary_id)
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -1152,9 +1157,9 @@ class IDABinarySessionManager:
         result["binary_id"] = binary_id
         return result
 
+    @requires(BinaryState.ACTIVE)
     def value_ranges(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
         """IR-backed value-range annotations from the decompiler's microcode."""
-        self._activate(binary_id)
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -1166,11 +1171,10 @@ class IDABinarySessionManager:
         result["binary_id"] = binary_id
         return result
 
+    @requires(BinaryState.INDEXED)
     def binary_survey(self, binary_id: str, max_hotspots: int = 10) -> dict[str, Any]:
         """One-call orientation: metadata + attack surface + hotspots + pattern hits."""
-        self._activate(binary_id)
         rec = self._require(binary_id)
-        self._ensure_indexed(binary_id)
         index = self._indices[binary_id]
 
         # Attack surface: dangerous and network-related imports
@@ -1234,6 +1238,7 @@ class IDABinarySessionManager:
             ],
             "pattern_hits": pattern_hits,
         }
+    @requires(BinaryState.INDEXED)
     def call_chain(
         self,
         binary_id: str,
@@ -1247,8 +1252,6 @@ class IDABinarySessionManager:
         Returns the full call tree reaching (or reachable from) the target.
         Uses the function index — no decompilation needed.
         """
-        self._activate(binary_id)
-        self._ensure_indexed(binary_id)
         index = self._indices[binary_id]
 
         # Build lookup maps
@@ -1310,11 +1313,10 @@ class IDABinarySessionManager:
             "chain": all_nodes,
         }
 
+    @requires(BinaryState.INDEXED)
     def classify_behavior(self, binary_id: str) -> dict[str, Any]:
         """Map imported APIs to ATT&CK-aligned behavioral categories."""
-        self._activate(binary_id)
         self._require(binary_id)
-        self._ensure_indexed(binary_id)
         index = self._indices[binary_id]
 
         # Collect normalized API names from callees AND import table
@@ -1393,9 +1395,9 @@ class IDABinarySessionManager:
             "total_apis_matched": sum(len(v) for v in results.values()),
         }
 
+    @requires(BinaryState.INDEXED)
     def detect_anti_analysis(self, binary_id: str) -> dict[str, Any]:
         """Detect anti-debug, anti-VM, and anti-sandbox techniques."""
-        self._activate(binary_id)
         index = self._indices[binary_id]
 
         all_apis: set[str] = set()
@@ -1469,11 +1471,11 @@ class IDABinarySessionManager:
             "verdict": 'evasive' if len(techniques) >= 2 else ('suspicious' if techniques else 'clean'),
         }
 
+    @requires(BinaryState.ACTIVE)
     def entropy_analysis(self, binary_id: str) -> dict[str, Any]:
         """Compute per-section Shannon entropy for packing/encryption detection."""
         import math
 
-        self._activate(binary_id)
         self._require(binary_id)
 
         section_entropy: list[dict[str, Any]] = []
@@ -1527,6 +1529,7 @@ class IDABinarySessionManager:
             ),
         }
 
+    @requires(BinaryState.INDEXED)
     def classify_strings(self, binary_id: str, limit: int = 200) -> dict[str, Any]:
         """Structurally classify string references by format.
 
@@ -1535,7 +1538,6 @@ class IDABinarySessionManager:
         """
         import re
 
-        self._activate(binary_id)
         index = self._indices[binary_id]
 
         all_strings: list[str] = []
@@ -1583,14 +1585,13 @@ class IDABinarySessionManager:
             "categories": {k: v for k, v in categories.items() if v},
         }
 
+    @requires(BinaryState.ACTIVE)
     def detect_dynamic_resolution(self, binary_id: str, limit: int = 50) -> dict[str, Any]:
         """Find GetProcAddress/LoadLibrary calls and extract resolved API names.
 
         Detects runtime API resolution — a key malware evasion technique where
         imports are resolved dynamically to avoid static IAT detection.
         """
-        self._activate(binary_id)
-        self._ensure_indexed(binary_id)
         index = self._indices[binary_id]
         import ida_funcs
 
@@ -1663,6 +1664,7 @@ class IDABinarySessionManager:
             'functions_with_resolution': len(candidates),
         }
 
+    @requires(BinaryState.ACTIVE)
     def path_feasibility(
         self,
         binary_id: str,
@@ -1743,6 +1745,7 @@ class IDABinarySessionManager:
             "active_states_at_end": len(simgr.active),
         }
 
+    @requires(BinaryState.ACTIVE)
     def find_paths(
         self,
         binary_id: str,
