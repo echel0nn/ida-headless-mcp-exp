@@ -64,6 +64,7 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
         "close_binary": lambda p: mgr.close_binary(p["binary_id"], save=p.get("save", False)),
         "list_binaries": lambda p: mgr.list_binaries(),
         "binary_metadata": lambda p: mgr.binary_metadata(p["binary_id"]),
+        "poll_analysis": lambda p: mgr.poll_analysis(p["binary_id"]),
         "list_functions": lambda p: mgr.list_functions(
             p["binary_id"], offset=p.get("offset", 0), limit=p.get("limit", 100),
             filter_text=p.get("filter_text", ""), order_by=p.get("order_by", "name"),

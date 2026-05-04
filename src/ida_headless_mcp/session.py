@@ -153,39 +153,70 @@ class IDABinarySessionManager:
         return {"binary_id": binary_id, "closed": True}
 
     def list_binaries(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "binary_id": rec.binary_id,
-                "path": str(rec.path),
-                "format": rec.format,
-                "arch": rec.arch,
-                "bits": rec.bits,
-                "active": rec.binary_id == self._active_binary_id,
-                "function_count": rec.function_count,
-            }
-            for rec in self._records.values()
-        ]
+        result = []
+        for rec in self._records.values():
+            lc = self._lifecycle.get(rec.binary_id)
+            state = lc.state.name if lc else 'UNKNOWN'
+            result.append({
+                'binary_id': rec.binary_id,
+                'path': str(rec.path),
+                'format': rec.format,
+                'size_bytes': rec.size_bytes,
+                'state': state,
+                'analysis_ready': rec.analysis_ready,
+                'function_count': rec.function_count,
+            })
+        return result
 
     def binary_metadata(self, binary_id: str) -> dict[str, Any]:
         rec = self._require(binary_id)
+        lc = self._lifecycle.get(binary_id)
+        state = lc.state.name if lc else 'UNKNOWN'
         return {
-            "binary_id": rec.binary_id,
-            "path": str(rec.path),
-            "sha256": rec.sha256,
-            "size_bytes": rec.size_bytes,
-            "format": rec.format,
-            "arch": rec.arch,
-            "bits": rec.bits,
-            "root_filename": rec.root_filename,
-            "entry_points": rec.entry_points,
-            "function_count": rec.function_count,
-            "segment_count": rec.segment_count,
-            "imports_count": rec.imports_count,
-            "exports_count": rec.exports_count,
-            "strings_count": rec.strings_count,
-            "mitigations": rec.mitigations,
-            "sections": rec.sections,
-            "active": rec.binary_id == self._active_binary_id,
+            'binary_id': rec.binary_id,
+            'path': str(rec.path),
+            'sha256': rec.sha256,
+            'size_bytes': rec.size_bytes,
+            'format': rec.format,
+            'arch': rec.arch,
+            'bits': rec.bits,
+            'root_filename': rec.root_filename,
+            'state': state,
+            'analysis_ready': rec.analysis_ready,
+            'function_count': rec.function_count,
+            'segment_count': rec.segment_count,
+            'imports_count': rec.imports_count,
+            'exports_count': rec.exports_count,
+            'strings_count': rec.strings_count,
+            'mitigations': rec.mitigations,
+            'active': rec.binary_id == self._active_binary_id,
+        }
+
+    def poll_analysis(self, binary_id: str) -> dict[str, Any]:
+        """Check analysis progress. Returns current lifecycle state.
+
+        States:
+          REGISTERED  — binary known, background analysis not yet started
+          ANALYZING   — idat64 -B running in background (wait)
+          READY       — .i64 exists, IDA can open in <1s
+          ACTIVE      — idalib has database loaded
+          INDEXED     — function index built, all tools available
+        """
+        lc = self._lifecycle.get(binary_id)
+        if lc is None:
+            raise KeyError(f'Unknown binary_id: {binary_id}')
+        # Reconcile with filesystem reality
+        old_state = lc.state
+        self._lifecycle.poll_analysis(binary_id)
+        return {
+            'binary_id': binary_id,
+            'state': lc.state.name,
+            'previous_state': old_state.name,
+            'analysis_ready': lc.state >= BinaryState.READY,
+            'ida_active': lc.state >= BinaryState.ACTIVE,
+            'index_ready': lc.state >= BinaryState.INDEXED,
+            'function_count': lc.function_count,
+            'error': lc.error,
         }
 
     def list_functions(
@@ -1764,8 +1795,14 @@ class IDABinarySessionManager:
         if self._active_binary_id == binary_id and rec.analysis_ready:
             return
 
-        # Ensure .i64 exists (may block waiting for background analysis)
-        self._lifecycle.ensure_state(binary_id, BinaryState.READY)
+        # Check if .i64 is ready
+        self._lifecycle._reconcile(lc)
+        if lc.state < BinaryState.READY:
+            raise RuntimeError(
+                f"Binary {binary_id} is still in state {lc.state.name}. "
+                f"Use poll_analysis to check progress. "
+                f"Background idat64 is creating the .i64 database."
+            )
 
         # Close whatever is currently open in idalib
         try:
