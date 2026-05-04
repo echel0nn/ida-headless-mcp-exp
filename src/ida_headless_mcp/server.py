@@ -274,6 +274,7 @@ def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dic
         cached["status"] = "ready"
         return cached
     fe.cache.queue_decompile(sha, address_or_name)
+    fe.lifecycle.ensure_worker(binary_id)
     lc = fe.lifecycle.get(binary_id)
     return fe._pending(binary_id, lc)
 
@@ -369,6 +370,7 @@ def search_pattern(binary_id: str, pattern_type: str, name_pattern: str = "", li
         cached["status"] = "ready"
         return cached
     fe.cache.queue_pattern(sha, pattern_type)
+    fe.lifecycle.ensure_worker(binary_id)
     lc = fe.lifecycle.get(binary_id)
     return fe._pending(binary_id, lc)
 
