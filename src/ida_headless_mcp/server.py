@@ -89,8 +89,9 @@ class _Frontend:
             cached["binary_id"] = binary_id
             cached["status"] = "ready"
             return cached
-        # Queue the request
+        # Queue the request and ensure worker is alive to process it
         self.cache.queue_request(sha, tool, params or {})
+        self.lifecycle.ensure_worker(binary_id)
         return self._pending(binary_id, lc)
 
 
@@ -391,6 +392,7 @@ def binary_survey(binary_id: str, max_hotspots: int = 10) -> dict:
         cached["status"] = "ready"
         return cached
     fe.cache.queue_request(sha, "binary_survey", {"max_hotspots": max_hotspots})
+    fe.lifecycle.ensure_worker(binary_id)
     lc = fe.lifecycle.get(binary_id)
     return fe._pending(binary_id, lc)
 
@@ -498,6 +500,7 @@ def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> d
             cached["_generation"] = staleness["generation"]
         return cached
     fe.cache.queue_request(sha, tool_name, {"binary_id": binary_id, **params})
+    fe.lifecycle.ensure_worker(binary_id)
     return fe._pending(binary_id, lc)
 
 
