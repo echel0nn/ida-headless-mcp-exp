@@ -143,8 +143,9 @@ def _consume_queue(queue_path: Path, handler) -> bool:
     for line in raw.splitlines():
         try:
             handler(json.loads(line))
-        except (json.JSONDecodeError, Exception):
-            pass
+        except Exception as exc:
+            import sys
+            print(f"[binary_worker] queue handler error: {exc}", file=sys.stderr, flush=True)
     return True
 
 
@@ -222,9 +223,25 @@ def _handle_search_pattern(req, sha_dir, patterns_dir, current_gen):
 
 
 def _handle_tool(req, sha_dir, results_dir, current_gen):
-    """Run any IDA tool via session manager and cache the result."""
+    """Run any IDA tool via worker dispatch and cache the result.
+
+    Translates queue request format to dispatch params format:
+    - queue uses 'target' for address_or_name
+    - dispatch expects 'binary_id' and 'address_or_name'
+    """
     req_type = req.get("type", "")
-    key = req.get("address_or_name", req.get("key", ""))
+    sha = sha_dir.name
+    binary_id = f"b_{sha[:12]}"
+
+    # Build dispatch params from queue request
+    params = dict(req)
+    params["binary_id"] = binary_id
+    # Normalize field names: queue uses 'target', dispatch uses 'address_or_name'
+    if "target" in params and "address_or_name" not in params:
+        params["address_or_name"] = params.pop("target")
+
+    # Cache key from the normalized params
+    key = params.get("address_or_name", params.get("key", ""))
     safe_key = key.replace("/", "_").replace("\\", "_").replace(":", "_")
     filename = f"{req_type}_{safe_key}.json" if safe_key else f"{req_type}.json"
     cache_file = results_dir / filename
@@ -234,14 +251,20 @@ def _handle_tool(req, sha_dir, results_dir, current_gen):
     mgr = _build_session_stub(sha_dir)
     try:
         from ida_headless_mcp.worker import _dispatch
-        result = _dispatch(mgr, req_type, req)
+        result = _dispatch(mgr, req_type, params)
         if isinstance(result, dict):
             result["generation"] = current_gen
             cache_file.write_text(
                 json.dumps(result, separators=(',', ':')), encoding="utf-8",
             )
-    except (ValueError, KeyError, RuntimeError):
-        pass
+    except Exception as exc:
+        import sys
+        print(f"[binary_worker] _handle_tool error: {req_type}: {exc}", file=sys.stderr, flush=True)
+        err_file = results_dir / f"{req_type}_error.json"
+        err_file.write_text(json.dumps({
+            "error": str(exc), "type": req_type,
+            "params": {k: str(v) for k, v in params.items()}
+        }), encoding="utf-8")
 
 
 def _handle_mutation(req, sha_dir, gen, write_results_dir, decompile_dir):
@@ -291,16 +314,44 @@ def _handle_mutation(req, sha_dir, gen, write_results_dir, decompile_dir):
 
 
 def _build_session_stub(sha_dir: Path):
-    """Build a minimal IDABinarySessionManager over the already-open database."""
+    """Build a minimal IDABinarySessionManager over the already-open database.
+
+    The stub provides enough state for @requires decorators and all
+    session methods to work. The binary is already loaded in this process,
+    so the lifecycle stub always reports INDEXED state.
+    """
     import ida_funcs
+    import ida_segment
 
     from ida_headless_mcp.config import load_settings
     from ida_headless_mcp.function_index import FunctionIndex
+    from ida_headless_mcp.lifecycle import BinaryLifecycle, BinaryState
     from ida_headless_mcp.session import BinaryRecord, IDABinarySessionManager
 
     settings = load_settings()
     sha = sha_dir.name
     binary_id = f"b_{sha[:12]}"
+
+    # Build section list from IDA segments
+    sections = []
+    seg = ida_segment.get_first_seg()
+    while seg:
+        sections.append({
+            "name": ida_segment.get_segm_name(seg) or "",
+            "start": f"0x{seg.start_ea:x}",
+            "end": f"0x{seg.end_ea:x}",
+            "size": seg.size(),
+            "perm": seg.perm,
+        })
+        seg = ida_segment.get_next_seg(seg.start_ea)
+
+    # Build mitigations from PE headers if available
+    mitigations = {}
+    try:
+        import ida_entry
+        mitigations["has_entry"] = ida_entry.get_entry_qty() > 0
+    except ImportError:
+        pass
 
     mgr = IDABinarySessionManager.__new__(IDABinarySessionManager)
     mgr.settings = settings
@@ -313,11 +364,29 @@ def _build_session_stub(sha_dir: Path):
         binary_id=binary_id, path=sha_dir / "workspace",
         sha256=sha, size_bytes=0, format="", arch="", bits=64,
         entry_points=[], function_count=ida_funcs.get_func_qty(),
-        segment_count=0, imports_count=0, exports_count=0,
-        strings_count=0, mitigations={}, sections=[],
+        segment_count=len(sections), imports_count=0, exports_count=0,
+        strings_count=0, mitigations=mitigations, sections=sections,
         active=True, root_filename="", analysis_ready=True,
     )
     mgr._records[binary_id] = rec
+
+    # Stub lifecycle: binary is always INDEXED in the worker
+    class _StubLifecycle:
+        """Minimal lifecycle that @requires decorator can call."""
+        def __init__(self, bid, s):
+            self._lc = BinaryLifecycle(
+                binary_id=bid, sha256=s, original_path="",
+                root_filename="", size_bytes=0,
+            )
+            self._lc.state = BinaryState.INDEXED
+
+        def get(self, bid):
+            return self._lc
+
+        def _reconcile(self, lc):
+            pass  # No-op: binary is already loaded
+
+    mgr._lifecycle = _StubLifecycle(binary_id, sha)
 
     index_path = sha_dir / "index.json"
     if index_path.exists():
