@@ -399,6 +399,11 @@ def classify_strings(binary_id: str, limit: int = 200) -> dict:
     return _backend().classify_strings(binary_id, limit=limit)
 
 
+@mcp.tool()
+def detect_dynamic_resolution(binary_id: str, limit: int = 50) -> dict:
+    """Find GetProcAddress/LoadLibrary calls and extract dynamically resolved API names."""
+    return _backend().detect_dynamic_resolution(binary_id, limit=limit)
+
 
 @mcp.tool()
 def path_feasibility(

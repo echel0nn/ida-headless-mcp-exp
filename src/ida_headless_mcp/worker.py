@@ -161,6 +161,9 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
             p["binary_id"], p["target_function"],
             depth=p.get("depth", 5), direction=p.get("direction", "callers"),
         ),
+        "detect_dynamic_resolution": lambda p: mgr.detect_dynamic_resolution(
+            p["binary_id"], limit=p.get("limit", 50),
+        ),
         "ping": lambda p: {"status": "alive", "pid": __import__("os").getpid()},
         "shutdown": lambda p: _shutdown(),
     }
