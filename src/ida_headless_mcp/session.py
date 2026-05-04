@@ -1524,6 +1524,86 @@ class IDABinarySessionManager:
             "categories": {k: v for k, v in categories.items() if v},
         }
 
+    def detect_dynamic_resolution(self, binary_id: str, limit: int = 50) -> dict[str, Any]:
+        """Find GetProcAddress/LoadLibrary calls and extract resolved API names.
+
+        Detects runtime API resolution — a key malware evasion technique where
+        imports are resolved dynamically to avoid static IAT detection.
+        """
+        self._activate(binary_id)
+        self._ensure_indexed(binary_id)
+        index = self._indices[binary_id]
+        import ida_funcs
+
+        # Find functions that call GetProcAddress or LoadLibrary variants
+        resolver_names = {'getprocaddress', 'loadlibrary', 'loadlibraryex',
+                          'getmodulehandle', 'ldrgetprocedureaddress'}
+        candidates = []
+        for e in index.entries:
+            if e.is_thunk or e.is_library:
+                continue
+            callees_norm = {_normalize_api_name(c) for c in e.callees}
+            if callees_norm & resolver_names:
+                candidates.append(e)
+
+        resolved_apis: list[dict[str, Any]] = []
+        loaded_libraries: list[dict[str, Any]] = []
+
+        for entry in candidates[:20]:  # cap to avoid timeout
+            ea = entry.address
+            func = ida_funcs.get_func(ea)
+            if func is None:
+                continue
+            try:
+                cfunc = decompile_cfunc(func)
+            except (RuntimeError, ValueError):
+                continue
+
+            # Query GetProcAddress calls — arg 1 is the API name
+            gpa = query_ctree_calls(
+                cfunc, target_function='GetProcAddress',
+                argument_index=1, limit=limit,
+            )
+            for match in gpa.get('matches', []):
+                if match['arg_count'] >= 2:
+                    api_name = match['args_preview'][1].strip('"')
+                    resolved_apis.append({
+                        'function': entry.name,
+                        'address': match['address'],
+                        'resolved_api': api_name,
+                        'is_literal': (
+                            match['args_string_literal'][1]
+                            if len(match['args_string_literal']) > 1 else False
+                        ),
+                    })
+
+            # Query LoadLibrary calls — arg 0 is the DLL name
+            for ll_name in ['LoadLibrary', 'LoadLibraryEx', 'GetModuleHandle']:
+                ll = query_ctree_calls(
+                    cfunc, target_function=ll_name,
+                    argument_index=0, limit=10,
+                )
+                for match in ll.get('matches', []):
+                    if match['arg_count'] >= 1:
+                        dll_name = match['args_preview'][0].strip('"')
+                        loaded_libraries.append({
+                            'function': entry.name,
+                            'address': match['address'],
+                            'library': dll_name,
+                            'is_literal': match['args_string_literal'][0] if match['args_string_literal'] else False,
+                        })
+
+            if len(resolved_apis) >= limit:
+                break
+
+        return {
+            'binary_id': binary_id,
+            'dynamic_resolution_detected': len(resolved_apis) > 0 or len(loaded_libraries) > 0,
+            'resolved_apis': resolved_apis[:limit],
+            'loaded_libraries': loaded_libraries[:limit],
+            'functions_with_resolution': len(candidates),
+        }
+
     def path_feasibility(
         self,
         binary_id: str,
