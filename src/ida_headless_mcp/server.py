@@ -119,7 +119,11 @@ def open_binary(path: str) -> dict:
     if not target.is_file():
         return {"status": "error", "message": f"File not found: {path}"}
 
-    sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    h = hashlib.sha256()
+    with target.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    sha256 = h.hexdigest()
     binary_id = f"b_{sha256[:12]}"
 
     if binary_id in fe._binaries:
@@ -636,7 +640,19 @@ def diff_binary(binary_id_old: str, binary_id_new: str) -> dict:
         Structural diff of added, removed, and changed functions,
         or pending status.
     """
-    return _ida_tool("diff_binary", binary_id_old, key=binary_id_new, binary_id_new=binary_id_new)
+    fe = _fe()
+    for bid in (binary_id_old, binary_id_new):
+        try:
+            fe._sha(bid)
+        except KeyError:
+            return {"status": "error", "message": f"Unknown binary_id: {bid}"}
+        lc = fe.lifecycle.get(bid)
+        if lc and lc.state < BinaryState.READY:
+            return fe._pending(bid, lc)
+    return _ida_tool(
+        "diff_binary", binary_id_old,
+        key=binary_id_new, binary_id_new=binary_id_new,
+    )
 
 
 @mcp.tool()
@@ -655,15 +671,20 @@ def diff_function(
     Returns:
         Side-by-side pseudocode and unified diff, or pending status.
     """
+    fe = _fe()
+    for bid in (binary_id_old, binary_id_new):
+        try:
+            fe._sha(bid)
+        except KeyError:
+            return {"status": "error", "message": f"Unknown binary_id: {bid}"}
+        lc = fe.lifecycle.get(bid)
+        if lc and lc.state < BinaryState.READY:
+            return fe._pending(bid, lc)
     key = f"{address_or_name_old}_{binary_id_new}_{address_or_name_new}"
     return _ida_tool(
-        "diff_function",
-        binary_id_old,
-        key=key,
-        binary_id_new=binary_id_new,
-        address_or_name_old=address_or_name_old,
-        address_or_name_new=address_or_name_new,
-        max_lines=max_lines,
+        "diff_function", binary_id_old, key=key,
+        binary_id_new=binary_id_new, address_or_name_old=address_or_name_old,
+        address_or_name_new=address_or_name_new, max_lines=max_lines,
     )
 
 
@@ -686,12 +707,18 @@ def diff_survey(
         Aggregated survey of changed functions ranked by security
         impact, or pending status.
     """
+    fe = _fe()
+    for bid in (binary_id_old, binary_id_new):
+        try:
+            fe._sha(bid)
+        except KeyError:
+            return {"status": "error", "message": f"Unknown binary_id: {bid}"}
+        lc = fe.lifecycle.get(bid)
+        if lc and lc.state < BinaryState.READY:
+            return fe._pending(bid, lc)
     return _ida_tool(
-        "diff_survey",
-        binary_id_old,
-        key=binary_id_new,
-        binary_id_new=binary_id_new,
-        max_changed=max_changed,
+        "diff_survey", binary_id_old, key=binary_id_new,
+        binary_id_new=binary_id_new, max_changed=max_changed,
         include_pseudocode_diff=include_pseudocode_diff,
     )
 

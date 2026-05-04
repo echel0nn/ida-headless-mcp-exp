@@ -142,20 +142,17 @@ class CacheReader:
             fh.write(entry + "\n")
 
     def check_staleness(self, sha256: str, cache_file: Path) -> dict[str, Any]:
-        """Check if a cache file is stale relative to the generation counter.
-
-        A file is stale if it was written BEFORE the last generation bump.
+        """Check if a cached result is stale by comparing embedded generation.
 
         Args:
             sha256: Hash identifying the binary.
             cache_file: Path to the cache file to check.
 
         Returns:
-            Staleness info to embed in every read response.
+            Dict with stale flag, current and cache generation numbers.
         """
         gen_path = self.cache_dir / sha256 / "generation.txt"
         if not gen_path.exists():
-            # No writes have ever happened — nothing is stale
             return {"stale": False, "generation": 0, "cache_generation": 0}
 
         try:
@@ -166,19 +163,17 @@ class CacheReader:
         if not cache_file.exists():
             return {"stale": True, "generation": current_gen, "cache_generation": -1}
 
-        # Compare: gen file mtime vs cache file mtime
-        # If gen file is newer than cache file, cache is stale
-        gen_mtime = gen_path.stat().st_mtime
-        cache_mtime = cache_file.stat().st_mtime
-        is_stale = gen_mtime > cache_mtime
+        try:
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+            cache_gen = data.get("generation", 0)
+        except (json.JSONDecodeError, OSError):
+            cache_gen = 0
 
         return {
-            "stale": is_stale,
+            "stale": cache_gen < current_gen,
             "generation": current_gen,
-            "cache_mtime": cache_mtime,
-            "generation_mtime": gen_mtime,
+            "cache_generation": cache_gen,
         }
-
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
