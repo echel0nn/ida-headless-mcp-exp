@@ -199,6 +199,16 @@ class LifecycleManager:
             lc.error = f"Failed to start idat64: {exc}"
             self._save(lc)
 
+    def ensure_worker(self, binary_id: str) -> None:
+        """Ensure a worker is running for the given binary.
+
+        Called by the server before queuing a request so that
+        queued work actually gets processed.
+        """
+        lc = self._lifecycles.get(binary_id)
+        if lc and lc.state >= BinaryState.READY:
+            self._start_binary_worker(lc)
+
     def _start_binary_worker(self, lc: BinaryLifecycle) -> None:
         """Spawn a binary_worker process for this binary.
 
@@ -367,8 +377,12 @@ class LifecycleManager:
             if lc is not None:
                 self._reconcile(lc)
                 self._lifecycles[lc.binary_id] = lc
+                # Start worker if there are pending requests in queue
+                queue = sha_dir / "request_queue.jsonl"
+                has_pending = queue.exists() and queue.stat().st_size > 0
+                if lc.state >= BinaryState.READY and has_pending:
+                    self._start_binary_worker(lc)
                 recovered.append(lc)
-        return recovered
 
     def get(self, binary_id: str) -> BinaryLifecycle | None:
         return self._lifecycles.get(binary_id)
