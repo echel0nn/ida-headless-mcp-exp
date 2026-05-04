@@ -24,6 +24,7 @@ from .hexrays_analysis import (
     query_ctree_unchecked_calls,
     trace_ctree_dataflow,
 )
+from .lifecycle import BinaryState, LifecycleManager
 
 __all__ = ["BinaryRecord", "IDABinarySessionManager"]
 
@@ -80,15 +81,20 @@ class IDABinarySessionManager:
         self._active_binary_id: str | None = None
         self._indices: dict[str, FunctionIndex] = {}
         self._manifest_path = self.settings.cache_dir / "manifest.json"
-        self._session_state_path = self.settings.cache_dir / "session_state.json"
-        # Session restore is LAZY — happens on first open_binary or list_binaries
-        # call, NOT here. __init__ must be instant for MCP handshake to succeed.
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        self._lifecycle = LifecycleManager(settings.cache_dir, settings.ida_dir)
+        # Recover any binaries from prior sessions instantly
+        for lc in self._lifecycle.recover_all():
+            if lc.binary_id not in self._records:
+                self._records[lc.binary_id] = self._record_from_lifecycle(lc)
 
     def open_binary(self, path: str) -> BinaryRecord:
+        """Register a binary for analysis. Returns INSTANTLY (<100ms).
+
+        The actual IDA analysis runs in background via idat64 -B.
+        Tools that need IDA (decompile, search_pattern) will block on
+        first call until the .i64 is ready (0.65s warm, 25-60s cold).
+        Tools that don't need IDA (checksec, entropy) work immediately.
+        """
         target = Path(path).resolve()
         if not target.is_file():
             raise FileNotFoundError(f"Binary not found: {target}")
@@ -104,41 +110,37 @@ class IDABinarySessionManager:
         if binary_id in self._records:
             return self._records[binary_id]
 
-        # Persistent workspace: copy binary so IDA's .i64 persists
-        workspace = self._workspace_path(sha256)
-        workspace_binary = workspace / target.name
-        if not workspace_binary.exists():
-            import shutil
-            workspace.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target, workspace_binary)
+        # Register + spawn background analysis (instant)
+        lc = self._lifecycle.register(binary_id, sha256, target, size_bytes)
+        record = self._record_from_lifecycle(lc)
+        self._records[binary_id] = record
+        return record
 
-        # Return FAST — no IDA open here. Use cached metadata or PE header.
+    def _record_from_lifecycle(self, lc: Any) -> BinaryRecord:
+        """Build a BinaryRecord from lifecycle state + PE header."""
+        target = Path(lc.original_path)
         is_pe = target.suffix.lower() in {'.exe', '.dll', '.sys'}
-        mitigations = _pe_mitigations(target) if is_pe else {'type': 'unknown'}
-        record = BinaryRecord(
-            binary_id=binary_id,
+        mitigations = _pe_mitigations(target) if is_pe and target.exists() else {'type': 'unknown'}
+        return BinaryRecord(
+            binary_id=lc.binary_id,
             path=target,
-            sha256=sha256,
-            size_bytes=size_bytes,
+            sha256=lc.sha256,
+            size_bytes=lc.size_bytes,
             format=('Portable executable for AMD64 (PE)' if is_pe else 'unknown'),
             arch='metapc',
             bits=64,
             entry_points=[],
-            function_count=0,  # filled on first IDA open
+            function_count=lc.function_count,
             segment_count=0,
             imports_count=0,
             exports_count=0,
             strings_count=0,
             mitigations=mitigations,
             sections=[],
-            active=False,
-            root_filename=target.name,
-            analysis_ready=False,  # IDA not yet opened
+            active=lc.state >= BinaryState.ACTIVE,
+            root_filename=lc.root_filename,
+            analysis_ready=lc.state >= BinaryState.ACTIVE,
         )
-        self._records[binary_id] = record
-        self._touch_manifest(sha256, record.root_filename, 0)
-        self._save_session_state(binary_id)
-        return record
 
     def close_binary(self, binary_id: str, save: bool = False) -> dict[str, Any]:
         if self._active_binary_id == binary_id:
@@ -1752,8 +1754,51 @@ class IDABinarySessionManager:
             raise KeyError(f"Unknown binary_id: {binary_id}") from exc
 
     def _activate(self, binary_id: str) -> None:
-        """Ensure binary is the active IDA database. Opens lazily if needed."""
-        self._ensure_ida_open(binary_id)
+        """Ensure binary is the active IDA database. Uses lifecycle state machine."""
+        rec = self._require(binary_id)
+        lc = self._lifecycle.get(binary_id)
+        if lc is None:
+            raise KeyError(f"No lifecycle for binary_id: {binary_id}")
+
+        # Already active in idalib?
+        if self._active_binary_id == binary_id and rec.analysis_ready:
+            return
+
+        # Ensure .i64 exists (may block waiting for background analysis)
+        self._lifecycle.ensure_state(binary_id, BinaryState.READY)
+
+        # Close whatever is currently open in idalib
+        try:
+            self._ida.close_database(True)
+        except (RuntimeError, OSError):
+            pass
+        if self._active_binary_id and self._active_binary_id in self._records:
+            self._records[self._active_binary_id].active = False
+
+        # Open the .i64 (0.65s warm)
+        workspace_binary = self._lifecycle.workspace_binary(lc)
+        self._open_database(workspace_binary)
+
+        # Fill in real metadata from IDA
+        import ida_funcs
+        import ida_strlist
+        import idautils
+        rec.function_count = ida_funcs.get_func_qty()
+        rec.exports_count = len(list(idautils.Entries()))
+        rec.strings_count = ida_strlist.get_strlist_qty()
+        rec.active = True
+        rec.analysis_ready = True
+        self._active_binary_id = binary_id
+
+        # Update lifecycle state
+        lc.state = BinaryState.ACTIVE
+        lc.function_count = rec.function_count
+        self._lifecycle._save(lc)
+
+        # Load cached index if available
+        index_path = self._index_cache_path(rec.sha256)
+        if index_path.exists() and binary_id not in self._indices:
+            self._indices[binary_id] = FunctionIndex.load(index_path)
 
     def _open_database(self, path: Path) -> None:
         # Clean stale lock files from prior hard-kill. IDA uses .id0/.id1/.nam/.til
@@ -1770,111 +1815,6 @@ class IDABinarySessionManager:
         if rc != 0:
             raise RuntimeError(f"open_database failed for {path} with code {rc}")
 
-    def _save_session_state(self, binary_id: str) -> None:
-        """Persist current session so server restart can resume."""
-        rec = self._records.get(binary_id)
-        if rec is None:
-            return
-        state = {
-            "binary_id": binary_id,
-            "sha256": rec.sha256,
-            "original_path": str(rec.path),
-            "root_filename": rec.root_filename,
-        }
-        self._session_state_path.parent.mkdir(parents=True, exist_ok=True)
-        self._session_state_path.write_text(json.dumps(state), encoding="utf-8")
-
-    def _restore_session(self) -> None:
-        """On startup, re-open the last active binary if its .i64 exists."""
-        if not self._session_state_path.exists():
-            return
-        try:
-            state = json.loads(self._session_state_path.read_text(encoding="utf-8"))
-            sha = state["sha256"]
-            workspace = self._workspace_path(sha)
-            # Find any .exe in the workspace
-            exe_files = list(workspace.glob("*.exe")) + list(workspace.glob("*.EXE"))
-            if not exe_files:
-                return
-            binary_path = exe_files[0]
-            # Open — fast if .i64 exists (0.5s), cold if not (17s)
-            try:
-                self._ida.close_database(True)
-            except (RuntimeError, OSError):
-                pass
-            self._open_database(binary_path)
-            rec = self._collect_metadata(
-                binary_id=state["binary_id"],
-                path=Path(state["original_path"]),
-                sha256=sha,
-                size_bytes=binary_path.stat().st_size,
-            )
-            self._records[state["binary_id"]] = rec
-            self._active_binary_id = state["binary_id"]
-            index_path = self._index_cache_path(sha)
-            if index_path.exists():
-                self._indices[state["binary_id"]] = FunctionIndex.load(index_path)
-        except (KeyError, OSError, RuntimeError, json.JSONDecodeError):
-            pass  # corrupt state file — start fresh
-
-    def _warmup_decompile_cache(self, binary_id: str, top_n: int = 10) -> None:
-        """Pre-decompile top-N functions by complexity into cache."""
-        if binary_id not in self._indices:
-            return
-        index = self._indices[binary_id]
-        by_cx = sorted(
-            (e for e in index.entries if not e.is_thunk and not e.is_library),
-            key=lambda e: -e.cyclomatic_complexity,
-        )
-        for entry in by_cx[:top_n]:
-            try:
-                self.decompile(binary_id, f"0x{entry.address:x}", max_lines=200)
-            except (RuntimeError, ValueError):
-                pass
-
-    def _ensure_ida_open(self, binary_id: str) -> None:
-        """Ensure IDA has this binary's database open. Lazy — called on first real tool use."""
-        rec = self._require(binary_id)
-        if rec.analysis_ready and self._active_binary_id == binary_id:
-            return
-
-        # Close whatever is currently open
-        try:
-            self._ida.close_database(True)
-        except (RuntimeError, OSError):
-            pass
-        if self._active_binary_id is not None:
-            if self._active_binary_id in self._records:
-                self._records[self._active_binary_id].active = False
-
-        # Open the workspace binary (stale locks cleaned inside _open_database)
-        workspace = self._workspace_path(rec.sha256)
-        workspace_binary = workspace / rec.path.name
-        if not workspace_binary.exists():
-            workspace_binary = rec.path  # fallback to original
-        self._open_database(workspace_binary)
-
-        # Now IDA is open — fill in the real metadata
-        import ida_funcs
-        import ida_nalt
-        import ida_strlist
-        import idautils
-
-        rec.function_count = ida_funcs.get_func_qty()
-        rec.imports_count = sum(
-            1 for i in range(ida_nalt.get_import_module_qty())
-            for _ in [None]  # count imports per module
-        )
-        rec.exports_count = len(list(idautils.Entries()))
-        rec.strings_count = ida_strlist.get_strlist_qty()
-        rec.active = True
-        rec.analysis_ready = True
-        self._active_binary_id = binary_id
-
-        # Load cached index if available
-        index_path = self._index_cache_path(rec.sha256)
-        if index_path.exists() and binary_id not in self._indices:
-            self._indices[binary_id] = FunctionIndex.load(index_path)
 
     def _ensure_analysis(self) -> None:
         """Block until auto-analysis is complete. Call only when full index is needed."""
