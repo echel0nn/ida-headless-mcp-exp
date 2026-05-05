@@ -23,6 +23,7 @@ __all__: list[str] = []
 QUEUE_FILENAME = "request_queue.jsonl"
 POLL_INTERVAL = 0.3
 HEARTBEAT_INTERVAL = 2.0  # seconds between heartbeat writes
+CODE_CHECK_INTERVAL = 10.0  # seconds between source mtime checks
 
 
 
@@ -57,6 +58,18 @@ def _write_error(sha_dir: Path, req_type: str, error: str, detail: str = "") -> 
         err_file.write_text(json.dumps(err, separators=(',', ':')), encoding="utf-8")
     except OSError:
         pass
+
+
+def _source_code_changed(start_time: float) -> bool:
+    """Check if any source file in this package is newer than worker start."""
+    src_dir = Path(__file__).parent
+    for f in src_dir.glob("*.py"):
+        try:
+            if f.stat().st_mtime > start_time:
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
@@ -143,6 +156,8 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     gen = Generation(sha_dir)
     last_activity = time.monotonic()
     last_heartbeat = 0.0
+    last_code_check = 0.0
+    worker_start_time = time.time()
 
     _write_heartbeat(sha_dir, "ready")
 
@@ -151,10 +166,17 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
             _write_heartbeat(sha_dir, "exiting_idle")
             break
 
-        # Heartbeat
+        # Code-change detection: exit if source files are newer than start
         now = time.monotonic()
+        if now - last_code_check > CODE_CHECK_INTERVAL:
+            last_code_check = now
+            if _source_code_changed(worker_start_time):
+                _write_heartbeat(sha_dir, "exiting_code_change")
+                break
+
+        # Heartbeat
         if now - last_heartbeat > HEARTBEAT_INTERVAL:
-            _write_heartbeat(sha_dir, "idle" if not False else "processing")
+            _write_heartbeat(sha_dir, "idle")
             last_heartbeat = now
 
         processed = False
