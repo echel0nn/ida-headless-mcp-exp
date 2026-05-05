@@ -23,6 +23,7 @@ class FunctionIndexEntry:
     callers: tuple[str, ...]
     callees: tuple[str, ...]
     string_refs: tuple[str, ...]
+    structure_hash: str = ""
 
 
 @dataclass(slots=True)
