@@ -1094,6 +1094,69 @@ class IDABinarySessionManager:
         return payload
 
     @requires(BinaryState.ACTIVE)
+    def interprocedural_taint(
+        self,
+        binary_id: str,
+        sink_function: str,
+        sink_argument_index: int,
+        *,
+        source_functions: list[str] | None = None,
+        max_depth: int = 5,
+    ) -> dict[str, Any]:
+        """Trace data flow from sink backward across function boundaries."""
+        from .hexrays_analysis import interprocedural_taint
+        result = interprocedural_taint(
+            sink_function=sink_function,
+            sink_argument_index=sink_argument_index,
+            source_functions=source_functions,
+            max_depth=max_depth,
+        )
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.ACTIVE)
+    def constrained_reachability(
+        self,
+        binary_id: str,
+        address_or_name: str,
+        sink_address: str,
+        *,
+        timeout_seconds: int = 60,
+    ) -> dict[str, Any]:
+        """Prove path reachability using angr seeded with Hex-Rays value ranges."""
+        import ida_funcs
+
+        from .hexrays_analysis import (
+            constrained_reachability,
+            decompile_cfunc,
+            microcode_value_ranges,
+        )
+
+        rec = self._require(binary_id)
+        ea = _resolve_address(address_or_name)
+        sink_ea = int(sink_address.strip(), 16)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+
+        # Extract value ranges from Hex-Rays microcode
+        cfunc = decompile_cfunc(func)
+        vr_data = microcode_value_ranges(cfunc)
+        ranges = vr_data.get("range_annotations", [])
+
+        # Run constrained angr exploration
+        result = constrained_reachability(
+            binary_path=str(rec.path),
+            function_ea=func.start_ea,
+            sink_ea=sink_ea,
+            value_ranges=ranges,
+            timeout_seconds=timeout_seconds,
+        )
+        result["binary_id"] = binary_id
+        result["value_ranges_used"] = len(ranges)
+        return result
+
+    @requires(BinaryState.ACTIVE)
     def hexrays_warnings(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
         import ida_funcs
 

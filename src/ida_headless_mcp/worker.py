@@ -177,6 +177,15 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
         "detect_dynamic_resolution": lambda p: mgr.detect_dynamic_resolution(
             p["binary_id"], limit=p.get("limit", 50),
         ),
+        "interprocedural_taint": lambda p: mgr.interprocedural_taint(
+            p["binary_id"], p["sink_function"], p["sink_argument_index"],
+            source_functions=p.get("source_functions"),
+            max_depth=p.get("max_depth", 5),
+        ),
+        "constrained_reachability": lambda p: mgr.constrained_reachability(
+            p["binary_id"], p["address_or_name"], p["sink_address"],
+            timeout_seconds=p.get("timeout_seconds", 60),
+        ),
         "ping": lambda p: {"status": "alive", "pid": __import__("os").getpid()},
         "shutdown": lambda p: _shutdown(),
     }
