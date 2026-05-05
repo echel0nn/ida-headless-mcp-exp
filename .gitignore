@@ -43,3 +43,4 @@ fixture_paths.txt
 *.SYS
 malware_files/
 evidence/.mcp.json
+poc/
