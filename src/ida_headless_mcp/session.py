@@ -1269,6 +1269,72 @@ class IDABinarySessionManager:
         return result
 
     @requires(BinaryState.ACTIVE)
+    def detect_stack_strings(self, binary_id: str, address_or_name: str) -> dict:
+        """Detect strings constructed on the stack (hidden from static string scan)."""
+        import ida_funcs
+        import ida_ua
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+
+        # Scan for consecutive byte stores to stack (mov [rbp-N], imm8)
+        strings_found: list[dict] = []
+        current_chars: list[int] = []
+        current_start = 0
+
+        for head in __import__("idautils").Heads(func.start_ea, func.end_ea):
+            insn = ida_ua.insn_t()
+            if ida_ua.decode_insn(insn, head) <= 0:
+                continue
+            # Check for mov [stack], immediate byte value
+            if (insn.ops[0].type in (3, 4)  # o_displ, o_phrase (stack ref)
+                    and insn.ops[1].type == 5  # o_imm
+                    and 0x20 <= (insn.ops[1].value & 0xFF) <= 0x7E):  # printable ASCII
+                if not current_chars:
+                    current_start = head
+                current_chars.append(insn.ops[1].value & 0xFF)
+            else:
+                # Also check for mov [stack], dword with ASCII bytes
+                if (insn.ops[0].type in (3, 4) and insn.ops[1].type == 5):
+                    val = insn.ops[1].value
+                    # Check if all 4 bytes are printable ASCII
+                    b = val.to_bytes(4, "little") if val < 0x100000000 else b""
+                    if b and all(0x20 <= c <= 0x7E for c in b if c != 0):
+                        chars = [c for c in b if c != 0]
+                        if chars:
+                            if not current_chars:
+                                current_start = head
+                            current_chars.extend(chars)
+                            continue
+                # End of sequence
+                if len(current_chars) >= 4:
+                    s = bytes(current_chars).decode("ascii", errors="replace")
+                    strings_found.append({
+                        "string": s,
+                        "address": f"0x{current_start:x}",
+                        "length": len(s),
+                    })
+                current_chars = []
+
+        # Flush last sequence
+        if len(current_chars) >= 4:
+            s = bytes(current_chars).decode("ascii", errors="replace")
+            strings_found.append({
+                "string": s,
+                "address": f"0x{current_start:x}",
+                "length": len(s),
+            })
+
+        return {
+            "binary_id": binary_id,
+            "function": address_or_name,
+            "stack_strings_found": len(strings_found),
+            "strings": strings_found,
+        }
+
+    @requires(BinaryState.ACTIVE)
     def generate_yara_rule(self, binary_id: str, address_or_name: str) -> dict:
         """Generate a YARA rule from a function's byte pattern."""
         import hashlib
