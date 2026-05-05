@@ -1268,49 +1268,6 @@ class IDABinarySessionManager:
         result["binary_id"] = binary_id
         return result
 
-    @requires(BinaryState.INDEXED)
-    def recover_class_hierarchy(self, binary_id: str) -> dict[str, Any]:
-        """Recover C++ class hierarchy from vtable analysis."""
-        import ida_bytes
-        import ida_segment
-        from .recovery import recover_class_hierarchy
-        # Scan .rdata for vtable candidates (arrays of code pointers)
-        vtables: list[dict] = []
-        seg = ida_segment.get_first_seg()
-        while seg:
-            name = ida_segment.get_segm_name(seg) or ""
-            if "rdata" in name.lower() or "rodata" in name.lower():
-                # Scan for consecutive code pointers
-                ea = seg.start_ea
-                while ea < seg.end_ea - 8:
-                    ptrs = []
-                    cur = ea
-                    while cur < seg.end_ea:
-                        val = int.from_bytes(
-                            ida_bytes.get_bytes(cur, 8) or b'\x00' * 8, 'little'
-                        )
-                        if 0x140000000 <= val <= 0x17FFFFFFF:  # typical code range
-                            ptrs.append(f"0x{val:x}")
-                            cur += 8
-                        else:
-                            break
-                    if len(ptrs) >= 3:  # minimum 3 entries for a vtable
-                        vtables.append({"address": f"0x{ea:x}", "entries": ptrs})
-                        ea = cur
-                    else:
-                        ea += 8
-            seg = ida_segment.get_next_seg(seg.start_ea)
-        idx = self._indices.get(binary_id)
-        func_entries = []
-        if idx:
-            func_entries = [
-                {"address": f"0x{e.address:x}", "name": e.name}
-                for e in idx.entries
-            ]
-        result = recover_class_hierarchy(vtables[:100], func_entries)
-        result["binary_id"] = binary_id
-        return result
-
     @requires(BinaryState.ACTIVE)
     def detect_protocol_state_machine(
         self, binary_id: str, address_or_name: str,
@@ -1387,23 +1344,6 @@ class IDABinarySessionManager:
         cfunc = decompile_cfunc(func)
         variables = sorted(set(_re.findall(r"\bv\d+\b", str(cfunc))))[:8]
         result = prove_equivalence(expr_a, expr_b, variables)
-        result["binary_id"] = binary_id
-        return result
-
-    @requires(BinaryState.ACTIVE)
-    def simplify_expression(self, binary_id: str, address_or_name: str, expression: str) -> dict[str, Any]:
-        """Simplify obfuscated expression via SMT equivalence proofs."""
-        import ida_funcs
-        import re as _re
-        from .hexrays_analysis import decompile_cfunc
-        from .proof import simplify_expression
-        ea = _resolve_address(address_or_name)
-        func = ida_funcs.get_func(ea)
-        if func is None:
-            raise ValueError(f"No function at {address_or_name!r}")
-        cfunc = decompile_cfunc(func)
-        variables = sorted(set(_re.findall(r"\bv\d+\b", str(cfunc))))[:4]
-        result = simplify_expression(expression, variables)
         result["binary_id"] = binary_id
         return result
 

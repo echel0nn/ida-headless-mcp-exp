@@ -13,7 +13,7 @@ from .smt_prover import solve_smtlib
 
 __all__ = [
     "prove_overflow", "prove_predicate_opaque", "prove_equivalence",
-    "simplify_expression", "prove_bounds_sufficient",
+"prove_bounds_sufficient",
 ]
 
 
