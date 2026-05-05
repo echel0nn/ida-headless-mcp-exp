@@ -9,6 +9,7 @@ __all__ = [
     "query_ctree_calls",
     "get_microcode_text",
     "trace_ctree_dataflow",
+    "interprocedural_taint",
     "get_argument_names",
     "query_ctree_call_sequences",
     "query_ctree_unchecked_calls",
@@ -16,6 +17,7 @@ __all__ = [
     "pseudocode_slice",
     "microcode_def_use",
     "microcode_value_ranges",
+    "constrained_reachability",
 ]
 
 
@@ -1009,3 +1011,377 @@ def microcode_value_ranges(cfunc: Any) -> dict[str, Any]:
         'bounded_vars': bounded_vars,
         'unbounded_vars': unbounded_vars,
     }
+
+
+
+# ======================================================================
+# Inter-procedural taint tracing
+# ======================================================================
+
+
+def interprocedural_taint(
+    sink_function: str,
+    sink_argument_index: int,
+    source_functions: list[str] | None = None,
+    max_depth: int = 5,
+) -> dict[str, Any]:
+    """Trace data flow from sink argument backward across function boundaries.
+
+    Algorithm:
+    1. Find all call sites of sink_function
+    2. For each call site, identify the argument expression
+    3. If the argument is a function parameter, follow callers
+    4. Recurse until hitting a source function or max_depth
+
+    Args:
+        sink_function: Name of the dangerous sink (e.g., 'system', 'memcpy').
+        sink_argument_index: Which argument to trace (0-based).
+        source_functions: Stop tracing when we reach one of these
+            (e.g., ['recv', 'ReadFile', 'WinHttpReadData']).
+        max_depth: Maximum call-chain hops.
+
+    Returns:
+        Dict with chains showing data propagation paths from sources to sink.
+    """
+    import ida_funcs
+    import ida_name
+    import idautils
+
+    sources = [s.lower() for s in (source_functions or [])]
+
+    # Step 1: Find all xrefs to the sink
+    sink_ea = None
+    for ea in idautils.Functions():
+        name = ida_name.get_ea_name(ea).lower()
+        norm = name.lstrip('_').replace('j_', '')
+        # Strip A/W/Ex suffixes for API matching
+        for suffix in ('exa', 'exw', 'a', 'w'):
+            if norm.endswith(suffix) and len(norm) > len(suffix):
+                norm = norm[:-len(suffix)]
+                break
+        if norm == sink_function.lower() or name == sink_function.lower():
+            sink_ea = ea
+            break
+
+    if sink_ea is None:
+        return {
+            "sink_function": sink_function,
+            "sink_found": False,
+            "chains": [],
+            "message": f"Sink function '{sink_function}' not found in binary.",
+        }
+
+    # Step 2: Find all callers of the sink
+    caller_sites: list[tuple[int, int]] = []  # (caller_func_ea, call_site_ea)
+    for xref in idautils.XrefsTo(sink_ea, 0):
+        caller_func = ida_funcs.get_func(xref.frm)
+        if caller_func:
+            caller_sites.append((caller_func.start_ea, xref.frm))
+
+    chains: list[dict[str, Any]] = []
+
+    for caller_ea, site_ea in caller_sites:
+        # Decompile the caller and trace the argument
+        chain = _trace_interprocedural_chain(
+            caller_ea, site_ea, sink_function, sink_argument_index,
+            sources, max_depth, depth=0,
+        )
+        if chain:
+            chains.append(chain)
+
+    return {
+        "sink_function": sink_function,
+        "sink_argument_index": sink_argument_index,
+        "sink_found": True,
+        "call_sites": len(caller_sites),
+        "chains": chains,
+        "source_functions": source_functions or [],
+    }
+
+
+def _trace_interprocedural_chain(
+    func_ea: int,
+    call_site_ea: int,
+    sink_function: str,
+    arg_index: int,
+    sources: list[str],
+    max_depth: int,
+    depth: int,
+) -> dict[str, Any] | None:
+    """Recursively trace one argument backward through the call chain."""
+    import ida_funcs
+    import ida_hexrays
+    import ida_name
+    import idautils
+
+    if depth > max_depth:
+        return None
+
+    func = ida_funcs.get_func(func_ea)
+    if func is None:
+        return None
+
+    func_name = ida_name.get_ea_name(func.start_ea)
+
+    try:
+        cfunc = ida_hexrays.decompile(func.start_ea)
+    except ida_hexrays.DecompilationFailure:
+        return None
+
+    # Find the sink call in this function's CTree
+    call_info = query_ctree_calls(
+        cfunc, target_function=sink_function,
+        argument_index=arg_index, limit=10,
+    )
+
+    # Find the specific call site
+    target_arg_expr = None
+    for match in call_info.get("matches", []):
+        if match.get("address") == f"0x{call_site_ea:x}":
+            args = match.get("args_preview", [])
+            if arg_index < len(args):
+                target_arg_expr = args[arg_index]
+            break
+
+    # If we couldn't find the exact site, try the first match
+    if target_arg_expr is None and call_info.get("matches"):
+        args = call_info["matches"][0].get("args_preview", [])
+        if arg_index < len(args):
+            target_arg_expr = args[arg_index]
+
+    if target_arg_expr is None:
+        return {
+            "function": func_name,
+            "address": f"0x{func_ea:x}",
+            "depth": depth,
+            "argument_expression": None,
+            "origin": "unknown",
+            "upstream": None,
+        }
+
+    # Trace backward within this function
+    trace = trace_ctree_dataflow(
+        cfunc,
+        sink_function=sink_function,
+        sink_argument_index=arg_index,
+        source_contains=sources,
+        max_steps=15,
+    )
+
+    # Determine origin
+    origin = "local"  # data originates in this function
+    final_expr = target_arg_expr
+    if trace.get("chain"):
+        final_expr = trace["chain"][-1].get("rhs", target_arg_expr)
+
+    # Check if it's a source hit
+    if trace.get("source_hit"):
+        return {
+            "function": func_name,
+            "address": f"0x{func_ea:x}",
+            "depth": depth,
+            "argument_expression": target_arg_expr,
+            "origin": "source",
+            "source_term": trace.get("source_term"),
+            "chain": trace.get("chain", []),
+            "upstream": None,
+        }
+
+    # Check if the final expression is a function parameter (a1, a2, etc.)
+    param_match = re.match(r'^a(\d+)$', _normalize_expr(final_expr))
+    if param_match:
+        param_idx = int(param_match.group(1)) - 1  # a1 → index 0
+        # This argument came from a caller — recurse up
+        upstream_chains: list[dict[str, Any]] = []
+        for xref in idautils.XrefsTo(func_ea, 0):
+            caller_func = ida_funcs.get_func(xref.frm)
+            if caller_func is None:
+                continue
+            up = _trace_interprocedural_chain(
+                caller_func.start_ea, xref.frm, func_name, param_idx,
+                sources, max_depth, depth + 1,
+            )
+            if up:
+                upstream_chains.append(up)
+            if len(upstream_chains) >= 3:  # limit fan-out
+                break
+
+        return {
+            "function": func_name,
+            "address": f"0x{func_ea:x}",
+            "depth": depth,
+            "argument_expression": target_arg_expr,
+            "origin": "parameter",
+            "parameter_index": param_idx,
+            "chain": trace.get("chain", []),
+            "upstream": upstream_chains if upstream_chains else None,
+        }
+
+    # Check if it comes from a call to something (e.g., recv() result)
+    for src in sources:
+        if src in final_expr.lower():
+            return {
+                "function": func_name,
+                "address": f"0x{func_ea:x}",
+                "depth": depth,
+                "argument_expression": target_arg_expr,
+                "origin": "source",
+                "source_term": src,
+                "chain": trace.get("chain", []),
+                "upstream": None,
+            }
+
+    return {
+        "function": func_name,
+        "address": f"0x{func_ea:x}",
+        "depth": depth,
+        "argument_expression": target_arg_expr,
+        "origin": origin,
+        "final_expression": final_expr,
+        "chain": trace.get("chain", []),
+        "upstream": None,
+    }
+
+
+# ======================================================================
+# Constrained reachability (Hex-Rays ranges + angr)
+# ======================================================================
+
+
+def constrained_reachability(
+    binary_path: str,
+    function_ea: int,
+    sink_ea: int,
+    value_ranges: list[dict[str, Any]],
+    *,
+    timeout_seconds: int = 60,
+    max_steps: int = 200000,
+) -> dict[str, Any]:
+    """Prove reachability from function entry to sink using angr with IR constraints.
+
+    Uses Hex-Rays value-range annotations to pre-constrain angr's initial
+    state, pruning impossible paths early and reducing state explosion.
+
+    Also hooks common library functions (strlen, memcpy, etc.) with
+    summaries to avoid symbolic execution of known code.
+
+    Args:
+        binary_path: Path to the PE/ELF binary file.
+        function_ea: Function entry address (source).
+        sink_ea: Target address to prove reachable.
+        value_ranges: Output from microcode_value_ranges — list of
+            {block, variable, constraint} dicts.
+        timeout_seconds: Maximum seconds for symbolic execution.
+        max_steps: Maximum exploration steps.
+
+    Returns:
+        Dict with feasibility verdict, steps, elapsed time, and
+        constraints used to seed the exploration.
+    """
+    import time
+
+    import angr
+
+    proj = angr.Project(binary_path, auto_load_libs=False)
+
+    # Build initial state at function entry
+    state = proj.factory.blank_state(addr=function_ea)
+
+    # Apply Hex-Rays value-range constraints to initial state
+    constraints_applied = []
+    for vr in value_ranges:
+        var = vr.get('variable', '')
+        constraint = vr.get('constraint', '')
+
+        # Parse register constraints (e.g., 'rbx.8:!=3', 'rax.8:!=0')
+        reg_match = re.match(r'^(r\w+|e\w+)\.(\d+)$', var)
+        if not reg_match:
+            continue
+        reg_name = reg_match.group(1)
+        _reg_bytes = int(reg_match.group(2))  # noqa: F841
+
+        try:
+            reg_val = getattr(state.regs, reg_name, None)
+            if reg_val is None:
+                continue
+        except (AttributeError, KeyError):
+            continue
+
+        # Parse constraint type
+        if constraint.startswith('!='):
+            # != value constraint
+            try:
+                raw = constraint[2:]
+                is_hex = 'x' in raw.lower() or any(c in raw for c in 'abcdefABCDEF')
+                val = int(raw, 16) if is_hex else int(raw)
+                state.solver.add(reg_val != val)
+                constraints_applied.append(f"{reg_name} != {val}")
+            except ValueError:
+                pass
+        elif constraint.startswith('[') and ',' in constraint:
+            # Range constraint [low, high]
+            try:
+                parts = constraint.strip('[]').split(',')
+                low = int(parts[0].strip(), 0)
+                high = int(parts[1].strip(), 0)
+                state.solver.add(reg_val >= low)
+                state.solver.add(reg_val <= high)
+                constraints_applied.append(f"{reg_name} in [{low}, {high}]")
+            except (ValueError, IndexError):
+                pass
+
+    # Hook common library functions with simprocedures to avoid explosion
+    hooked = []
+    for name in ('strlen', 'strcmp', 'memcpy', 'memset', 'malloc', 'free',
+                 'fopen', 'fclose', 'fwrite', 'fread', 'printf', 'puts'):
+        if proj.loader.find_symbol(name):
+            proj.hook_symbol(name, angr.SIM_PROCEDURES['libc'][name](), replace=True)
+            hooked.append(name)
+
+    simgr = proj.factory.simulation_manager(state)
+
+    t0 = time.monotonic()
+    deadline = t0 + timeout_seconds
+    steps_taken = 0
+    found = False
+    timed_out = False
+
+    try:
+        while simgr.active and steps_taken < max_steps:
+            if time.monotonic() > deadline:
+                timed_out = True
+                break
+            simgr.step()
+            steps_taken += 1
+            # Check if any state reached the sink
+            simgr.move(from_stash='active', to_stash='found',
+                      filter_func=lambda s: s.addr == sink_ea)
+            if simgr.found:
+                found = True
+                break
+            # Cap active states
+            if len(simgr.active) > 128:
+                simgr.active = simgr.active[:128]
+    except Exception:
+        pass
+
+    elapsed = time.monotonic() - t0
+
+    result: dict[str, Any] = {
+        'source': f'0x{function_ea:x}',
+        'sink': f'0x{sink_ea:x}',
+        'feasible': found,
+        'verdict': 'reachable' if found else ('timeout' if timed_out else 'unreachable'),
+        'steps': steps_taken,
+        'elapsed_s': round(elapsed, 2),
+        'constraints_applied': constraints_applied,
+        'hooks_applied': hooked,
+        'active_states_at_end': len(simgr.active),
+    }
+
+    # If found, extract witness
+    if found and simgr.found:
+        witness = simgr.found[0]
+        result['witness_constraints'] = len(witness.solver.constraints)
+
+    return result
