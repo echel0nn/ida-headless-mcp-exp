@@ -1254,6 +1254,28 @@ class IDABinarySessionManager:
         return result
 
     @requires(BinaryState.ACTIVE)
+    def assess_exploitability(
+        self,
+        binary_id: str,
+        address_or_name: str,
+        sink_function: str,
+        sink_argument_index: int,
+    ) -> dict[str, Any]:
+        """Assess exploitability of a sink in a specific function."""
+        import ida_funcs
+
+        from .hexrays_analysis import assess_exploitability, decompile_cfunc
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        result = assess_exploitability(cfunc, sink_function, sink_argument_index)
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.ACTIVE)
     def constrained_reachability(
         self,
         binary_id: str,

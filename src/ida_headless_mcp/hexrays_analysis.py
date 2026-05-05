@@ -18,6 +18,7 @@ __all__ = [
     "microcode_def_use",
     "microcode_value_ranges",
     "constrained_reachability",
+    "assess_exploitability",
 ]
 
 
@@ -1385,3 +1386,204 @@ def constrained_reachability(
         result['witness_constraints'] = len(witness.solver.constraints)
 
     return result
+
+
+
+# ======================================================================
+# Exploitability assessment - deep taint + validation gate detection
+# ======================================================================
+
+
+def assess_exploitability(
+    cfunc: Any,
+    sink_function: str,
+    sink_argument_index: int,
+) -> dict[str, Any]:
+    """Assess whether a sink argument is exploitable in this function.
+
+    Performs three analyses:
+    1. Deep backward taint with arithmetic tracking and source classification.
+    2. Validation gate detection via CTree if-statement walking.
+    3. Verdict computation combining source + arithmetic + gates.
+
+    Args:
+        cfunc: Decompiled function (from decompile_cfunc).
+        sink_function: Dangerous callee name.
+        sink_argument_index: Which argument to assess (0-based).
+
+    Returns:
+        Dict with source_type, arithmetic_chain, validation_gates, and verdict.
+    """
+    import ida_hexrays
+
+    func_name = _function_name(cfunc)
+    func_ea = f"0x{cfunc.entry_ea:x}"
+
+    sink_info = query_ctree_calls(
+        cfunc, target_function=sink_function,
+        argument_index=sink_argument_index, limit=5,
+    )
+    if not sink_info["matches"]:
+        return {
+            "function": func_name, "address": func_ea,
+            "sink_function": sink_function, "sink_found": False,
+            "verdict": "not_applicable",
+        }
+
+    match = sink_info["matches"][0]
+    sink_expr = match["args_preview"][sink_argument_index]
+    sink_addr = match["address"]
+
+    # Deep backward trace with arithmetic tracking
+    assignments = _collect_assignments(cfunc)
+    arithmetic_ops: list[str] = []
+    source_type = "unknown"
+    current = _normalize_expr(sink_expr)
+    chain: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for _ in range(20):
+        if current in seen:
+            break
+        seen.add(current)
+        if _is_parameter(current):
+            source_type = "function_parameter"
+            break
+        if _is_struct_field_read(current):
+            source_type = "struct_field"
+            break
+        if _is_constant(current):
+            source_type = "constant"
+            break
+        if _contains_call(current):
+            source_type = "call_result"
+            break
+        found = None
+        for item in reversed(assignments):
+            if item["lhs_norm"] == current:
+                found = item
+                break
+        if found is None:
+            break
+        rhs = found["rhs"]
+        chain.append({"lhs": found["lhs"], "rhs": rhs, "address": found["address"]})
+        if any(op in rhs for op in ("*", "<<", "+", "-", "/", "%")):
+            arithmetic_ops.append(rhs)
+        current = found["rhs_norm"]
+
+    if source_type == "struct_field":
+        source_type = "file_header_field"
+    elif source_type == "call_result":
+        if any(f in current.lower() for f in ("fread", "readfile", "recv")):
+            source_type = "external_read"
+
+    # Validation gate detection
+    sink_var = _normalize_expr(sink_expr)
+    tainted_vars = {sink_var} | {_normalize_expr(c["lhs"]) for c in chain}
+
+    class _GateVisitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self):
+            super().__init__(ida_hexrays.CV_FAST)
+            self.found_gates: list[dict[str, str]] = []
+            self.sink_ea = int(sink_addr, 16) if sink_addr.startswith("0x") else 0
+
+        def visit_insn(self, insn):
+            if insn.op != ida_hexrays.cit_if:
+                return 0
+            cond_preview = _expr_preview(insn.cif.expr, cfunc)
+            for tvar in tainted_vars:
+                if tvar.lower() in cond_preview.lower():
+                    gate_type = _classify_gate(cond_preview, tvar)
+                    if insn.ea < self.sink_ea or insn.ea == 0:
+                        self.found_gates.append({
+                            "address": f"0x{insn.ea:x}",
+                            "condition": cond_preview,
+                            "variable": tvar,
+                            "gate_type": gate_type,
+                        })
+            return 0
+
+    gv = _GateVisitor()
+    gv.apply_to(cfunc.body, None)
+    gates = gv.found_gates
+
+    has_upper = any(g["gate_type"] == "upper_bound" for g in gates)
+    has_ovf = any(g["gate_type"] == "overflow_check" for g in gates)
+    has_mul = any("*" in op or "<<" in op for op in arithmetic_ops)
+    is_ext = source_type in ("file_header_field", "external_read", "function_parameter")
+
+    if not is_ext:
+        verdict, reason = "low_risk", f"Source is '{source_type}' - not attacker-controlled."
+    elif has_ovf:
+        verdict, reason = "defended", "Overflow check detected before the sink."
+    elif has_upper and not has_mul:
+        verdict, reason = "defended", "Upper bound check caps the value."
+    elif has_mul and not has_upper:
+        verdict, reason = "likely_exploitable", (
+            "Unchecked multiplication on attacker-controlled value. Integer overflow.")
+    elif is_ext and not gates:
+        verdict, reason = "likely_exploitable", (
+            "Attacker-controlled value reaches the sink with no validation.")
+    elif is_ext and has_upper:
+        verdict, reason = "possibly_defended", "Bound exists but arithmetic may bypass."
+    else:
+        verdict, reason = "needs_review", "Mixed signals."
+
+    return {
+        "function": func_name, "address": func_ea,
+        "sink_function": sink_function,
+        "sink_argument_index": sink_argument_index,
+        "sink_expression": sink_expr, "sink_found": True,
+        "source_type": source_type, "source_expression": current,
+        "arithmetic_chain": arithmetic_ops,
+        "assignment_chain": chain,
+        "validation_gates": gates,
+        "has_multiplication": has_mul,
+        "has_upper_bound": has_upper,
+        "has_overflow_check": has_ovf,
+        "verdict": verdict, "verdict_reason": reason,
+    }
+
+
+def _is_parameter(expr: str) -> bool:
+    return bool(re.match(r"^a\d+$", expr))
+
+
+def _is_struct_field_read(expr: str) -> bool:
+    return ("*(" in expr or "->" in expr
+            or bool(re.search(r"\*\(_\w+\s*\*\)", expr))
+            or ("+" in expr and "*" in expr and "(" in expr))
+
+
+def _is_constant(expr: str) -> bool:
+    e = expr.strip().rstrip("uUlL")
+    if e.startswith("0x") or e.startswith("-0x"):
+        return True
+    try:
+        int(e)
+        return True
+    except ValueError:
+        return False
+
+
+def _contains_call(expr: str) -> bool:
+    return bool(re.search(r"\w+\s*\(", expr))
+
+
+def _classify_gate(condition: str, variable: str) -> str:
+    cond = condition.lower()
+    if "/" in cond and "*" in cond:
+        return "overflow_check"
+    if "overflow" in cond:
+        return "overflow_check"
+    if any(op in cond for op in (">", ">=", "<=", "<")):
+        if variable.lower() in cond:
+            if ">" in cond or ">=" in cond:
+                return "upper_bound"
+            if "<" in cond or "<=" in cond:
+                return "lower_bound"
+    if "== 0" in cond or "!= 0" in cond:
+        return "null_check"
+    if "size" in cond or "len" in cond or "max" in cond:
+        return "size_bound"
+    return "conditional"
