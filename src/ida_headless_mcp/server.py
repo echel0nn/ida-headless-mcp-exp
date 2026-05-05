@@ -985,6 +985,46 @@ def constrained_reachability(
 
 
 @mcp.tool()
+def assess_exploitability(
+    binary_id: str,
+    address_or_name: str,
+    sink_function: str,
+    sink_argument_index: int,
+) -> dict:
+    """Deep exploitability assessment for a specific sink in a function.
+
+    Combines three analyses:
+    1. Deep taint: traces the sink argument backward, classifying its source
+       (file_header_field, function_parameter, constant, call_result).
+    2. Arithmetic tracking: identifies multiplication, shifts, additions on
+       the tainted value (potential integer overflow).
+    3. Validation gate detection: finds if-checks (bounds, overflow, null)
+       between the source and the sink call.
+
+    Produces a verdict: likely_exploitable, defended, low_risk, needs_review.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function containing the sink call.
+        sink_function: The dangerous callee (e.g., 'memmove', 'memcpy').
+        sink_argument_index: Which argument to assess (e.g., 2 for size).
+
+    Returns:
+        Assessment with source_type, arithmetic_chain, validation_gates,
+        and exploitability verdict.
+    """
+    key = f"{address_or_name}_{sink_function}_{sink_argument_index}"
+    return _ida_tool(
+        "assess_exploitability",
+        binary_id,
+        key=key,
+        address_or_name=address_or_name,
+        sink_function=sink_function,
+        sink_argument_index=sink_argument_index,
+    )
+
+
+@mcp.tool()
 def classify_behavior(binary_id: str) -> dict:
     """Map imported APIs to ATT&CK-aligned behavioral categories.
 

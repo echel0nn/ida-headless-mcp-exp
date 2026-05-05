@@ -186,6 +186,11 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
             p["binary_id"], p["address_or_name"], p["sink_address"],
             timeout_seconds=p.get("timeout_seconds", 60),
         ),
+        "assess_exploitability": lambda p: mgr.assess_exploitability(
+            p["binary_id"], p["address_or_name"],
+            sink_function=p["sink_function"],
+            sink_argument_index=p["sink_argument_index"],
+        ),
         "ping": lambda p: {"status": "alive", "pid": __import__("os").getpid()},
         "shutdown": lambda p: _shutdown(),
     }
