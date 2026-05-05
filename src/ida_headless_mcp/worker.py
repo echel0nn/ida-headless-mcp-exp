@@ -186,6 +186,15 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
             p["binary_id"], p["address_or_name"], p["sink_address"],
             timeout_seconds=p.get("timeout_seconds", 60),
         ),
+        "prove_predicate_opaque": lambda p: mgr.prove_predicate_opaque(
+            p["binary_id"], p["address_or_name"], p.get("condition_address", ""),
+        ),
+        "prove_equivalence": lambda p: mgr.prove_equivalence(
+            p["binary_id"], p.get("expr_a", ""), p.get("expr_b", ""), p["address_or_name"],
+        ),
+        "simplify_expression": lambda p: mgr.simplify_expression(
+            p["binary_id"], p["address_or_name"], p.get("expression", ""),
+        ),
         "detect_obfuscation": lambda p: mgr.detect_obfuscation(
             p["binary_id"], p["address_or_name"],
         ),
