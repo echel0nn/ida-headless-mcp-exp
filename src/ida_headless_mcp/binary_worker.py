@@ -332,6 +332,18 @@ def _build_session_stub(sha_dir: Path):
     sha = sha_dir.name
     binary_id = f"b_{sha[:12]}"
 
+    # Read root_filename from persisted state
+    root_filename = ""
+    state_file = sha_dir / "state.json"
+    if state_file.exists():
+        try:
+            import json as _json
+            _state = _json.loads(state_file.read_text(encoding="utf-8"))
+            root_filename = _state.get("root_filename", "")
+        except (ValueError, OSError):
+            pass
+    binary_path = sha_dir / "workspace" / root_filename if root_filename else sha_dir / "workspace"
+
     # Build section list from IDA segments
     sections = []
     seg = ida_segment.get_first_seg()
@@ -361,12 +373,13 @@ def _build_session_stub(sha_dir: Path):
     mgr._manifest_path = settings.cache_dir / "manifest.json"
 
     rec = BinaryRecord(
-        binary_id=binary_id, path=sha_dir / "workspace",
-        sha256=sha, size_bytes=0, format="", arch="", bits=64,
+        binary_id=binary_id, path=binary_path,
+        sha256=sha, size_bytes=binary_path.stat().st_size if binary_path.is_file() else 0,
+        format="", arch="", bits=64,
         entry_points=[], function_count=ida_funcs.get_func_qty(),
         segment_count=len(sections), imports_count=0, exports_count=0,
         strings_count=0, mitigations=mitigations, sections=sections,
-        active=True, root_filename="", analysis_ready=True,
+        active=True, root_filename=root_filename, analysis_ready=True,
     )
     mgr._records[binary_id] = rec
 
