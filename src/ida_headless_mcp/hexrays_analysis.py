@@ -1419,11 +1419,36 @@ def assess_exploitability(
     func_name = _function_name(cfunc)
     func_ea = f"0x{cfunc.entry_ea:x}"
 
-    sink_info = query_ctree_calls(
-        cfunc, target_function=sink_function,
-        argument_index=sink_argument_index, limit=5,
-    )
-    if not sink_info["matches"]:
+    # Try multiple name variants to find the sink call
+    # IDA may name it differently: memmove, j_memmove, _memmove, etc.
+    sink_lower = sink_function.lower().lstrip('_')
+    variants = [
+        sink_function,
+        f"j_{sink_function}",
+        f"_{sink_function}",
+        sink_lower,
+    ]
+
+    sink_info = None
+    for variant in variants:
+        info = query_ctree_calls(
+            cfunc, target_function=variant,
+            argument_index=sink_argument_index, limit=5,
+        )
+        if info["matches"]:
+            sink_info = info
+            break
+
+    # Fallback: scan ALL calls and match by substring
+    if sink_info is None:
+        info = query_ctree_calls(cfunc, target_function="", limit=200)
+        for m in info.get("matches", []):
+            callee = (m.get("callee_name") or m.get("callee_expr") or "").lower()
+            if sink_lower in callee and m.get("arg_count", 0) > sink_argument_index:
+                sink_info = {"matches": [m]}
+                break
+
+    if sink_info is None or not sink_info["matches"]:
         return {
             "function": func_name, "address": func_ea,
             "sink_function": sink_function, "sink_found": False,
