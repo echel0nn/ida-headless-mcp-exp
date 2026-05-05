@@ -1,147 +1,44 @@
 """API hash resolution — resolve hash-imported Windows API names.
 
-Malware often imports APIs by hash instead of name to evade static
-analysis. This module implements common hash algorithms and maintains
-a lookup table to resolve hash values back to API names.
+Uses a precomputed database of 33,000+ hash entries across 107 algorithms
+derived from OALabs HashDB (MIT license). The database covers 310 Windows
+APIs commonly used in malware across algorithms from real malware families
+including Cobalt Strike, LockBit, Conti, DanaBot, Emotet, and more.
+
+Database: data/hashdb.json.gz (248 KB compressed)
+Algorithms: 107 (ROR13, DJB2, CRC32, FNV-1a, SDBM, Conti, LockBit, ...)
+APIs: 310 (kernel32, ntdll, ws2_32, winhttp, advapi32, crypt32, ...)
 """
 from __future__ import annotations
 
+import gzip
+import json
+from pathlib import Path
 from typing import Any
 
-__all__ = ["resolve_api_hashes", "compute_hash"]
+__all__ = ["resolve_api_hashes", "list_algorithms"]
 
-# Common Windows API names (subset — the most security-relevant ones)
-_COMMON_APIS: list[str] = [
-    # Process
-    "CreateProcessA", "CreateProcessW", "CreateRemoteThread",
-    "OpenProcess", "TerminateProcess", "ExitProcess",
-    "VirtualAlloc", "VirtualAllocEx", "VirtualProtect",
-    "VirtualFree", "WriteProcessMemory", "ReadProcessMemory",
-    "NtCreateThreadEx", "RtlCreateUserThread",
-    # Library loading
-    "LoadLibraryA", "LoadLibraryW", "LoadLibraryExA", "LoadLibraryExW",
-    "GetProcAddress", "GetModuleHandleA", "GetModuleHandleW",
-    "LdrLoadDll", "LdrGetProcedureAddress",
-    # File
-    "CreateFileA", "CreateFileW", "ReadFile", "WriteFile",
-    "DeleteFileA", "DeleteFileW", "CopyFileA", "CopyFileW",
-    "MoveFileA", "MoveFileW", "GetTempPathA", "GetTempPathW",
-    "GetTempFileNameA", "GetTempFileNameW",
-    # Registry
-    "RegOpenKeyExA", "RegOpenKeyExW", "RegSetValueExA", "RegSetValueExW",
-    "RegCreateKeyExA", "RegCreateKeyExW", "RegDeleteKeyA", "RegDeleteKeyW",
-    "RegQueryValueExA", "RegQueryValueExW",
-    # Network
-    "WSAStartup", "socket", "connect", "bind", "listen", "accept",
-    "send", "recv", "sendto", "recvfrom", "closesocket",
-    "InternetOpenA", "InternetOpenW", "InternetOpenUrlA", "InternetOpenUrlW",
-    "InternetConnectA", "InternetConnectW", "InternetReadFile",
-    "HttpOpenRequestA", "HttpOpenRequestW", "HttpSendRequestA",
-    "WinHttpOpen", "WinHttpConnect", "WinHttpOpenRequest",
-    "WinHttpSendRequest", "WinHttpReceiveResponse", "WinHttpReadData",
-    "URLDownloadToFileA", "URLDownloadToFileW",
-    # Crypto
-    "CryptAcquireContextA", "CryptAcquireContextW",
-    "CryptCreateHash", "CryptHashData", "CryptDeriveKey",
-    "CryptEncrypt", "CryptDecrypt", "CryptGenRandom",
-    "BCryptOpenAlgorithmProvider", "BCryptGenerateSymmetricKey",
-    "BCryptEncrypt", "BCryptDecrypt",
-    # Shell
-    "ShellExecuteA", "ShellExecuteW", "ShellExecuteExA", "ShellExecuteExW",
-    "WinExec", "system", "_wsystem",
-    # Service
-    "CreateServiceA", "CreateServiceW", "StartServiceA", "StartServiceW",
-    "OpenSCManagerA", "OpenSCManagerW",
-    # Misc
-    "IsDebuggerPresent", "CheckRemoteDebuggerPresent",
-    "OutputDebugStringA", "OutputDebugStringW",
-    "GetTickCount", "GetTickCount64", "QueryPerformanceCounter",
-    "Sleep", "SleepEx", "WaitForSingleObject",
-    "CreateMutexA", "CreateMutexW", "OpenMutexA", "OpenMutexW",
-    "GetComputerNameA", "GetComputerNameW",
-    "GetUserNameA", "GetUserNameW",
-    "GetWindowsDirectoryA", "GetWindowsDirectoryW",
-    "GetSystemDirectoryA", "GetSystemDirectoryW",
-    "GlobalAlloc", "GlobalFree", "HeapAlloc", "HeapFree",
-    "CloseHandle", "GetLastError", "SetLastError",
-]
+# Lazy-loaded database
+_DB: dict[str, dict[str, str]] | None = None
+_DB_PATH = Path(__file__).parent.parent.parent / "data" / "hashdb.json.gz"
 
 
-def _ror13(val: int) -> int:
-    """ROR13 on 32-bit value."""
-    return ((val >> 13) | (val << 19)) & 0xFFFFFFFF
+def _load_db() -> dict[str, dict[str, str]]:
+    """Load the compressed hash database."""
+    global _DB  # noqa: PLW0603
+    if _DB is not None:
+        return _DB
+    if not _DB_PATH.exists():
+        _DB = {}
+        return _DB
+    with gzip.open(_DB_PATH, "rt", encoding="utf-8") as f:
+        _DB = json.load(f)
+    return _DB
 
 
-def _djb2(name: str) -> int:
-    """DJB2 hash."""
-    h = 5381
-    for c in name.encode("ascii"):
-        h = ((h * 33) + c) & 0xFFFFFFFF
-    return h
-
-
-def _ror13_hash(name: str) -> int:
-    """ROR13 hash (common in shellcode/malware)."""
-    h = 0
-    for c in name.encode("ascii"):
-        h = (_ror13(h) + c) & 0xFFFFFFFF
-    return h
-
-
-def _crc32(name: str) -> int:
-    """CRC32 hash."""
-    import binascii
-    return binascii.crc32(name.encode("ascii")) & 0xFFFFFFFF
-
-
-def _fnv1a(name: str) -> int:
-    """FNV-1a 32-bit hash."""
-    h = 0x811C9DC5
-    for c in name.encode("ascii"):
-        h = ((h ^ c) * 0x01000193) & 0xFFFFFFFF
-    return h
-
-
-def _sdbm(name: str) -> int:
-    """SDBM hash."""
-    h = 0
-    for c in name.encode("ascii"):
-        h = (c + (h << 6) + (h << 16) - h) & 0xFFFFFFFF
-    return h
-
-
-_HASH_ALGORITHMS: dict[str, Any] = {
-    "ror13": _ror13_hash,
-    "djb2": _djb2,
-    "crc32": _crc32,
-    "fnv1a": _fnv1a,
-    "sdbm": _sdbm,
-}
-
-# Precomputed lookup tables: {algorithm: {hash_value: api_name}}
-_LOOKUP: dict[str, dict[int, str]] | None = None
-
-
-def _build_lookup() -> dict[str, dict[int, str]]:
-    """Build precomputed hash → name lookup tables."""
-    global _LOOKUP  # noqa: PLW0603
-    if _LOOKUP is not None:
-        return _LOOKUP
-    _LOOKUP = {}
-    for algo_name, algo_fn in _HASH_ALGORITHMS.items():
-        table: dict[int, str] = {}
-        for api in _COMMON_APIS:
-            table[algo_fn(api)] = api
-        _LOOKUP[algo_name] = table
-    return _LOOKUP
-
-
-def compute_hash(name: str, algorithm: str = "ror13") -> int | None:
-    """Compute hash of an API name using a specific algorithm."""
-    fn = _HASH_ALGORITHMS.get(algorithm)
-    if fn is None:
-        return None
-    return fn(name)
+def list_algorithms() -> list[str]:
+    """Return all supported hash algorithm names."""
+    return sorted(_load_db().keys())
 
 
 def resolve_api_hashes(
@@ -152,28 +49,30 @@ def resolve_api_hashes(
     """Resolve a list of hash values to API names.
 
     Tries each algorithm against each hash value. Returns all matches.
+    With 107 algorithms and 310 APIs, this is a 33K-entry lookup.
 
     Args:
         hash_values: List of integer hash values found in the binary.
-        algorithms: Which algorithms to try (default: all).
+        algorithms: Which algorithms to try (default: all 107).
 
     Returns:
-        Dict with resolved names and unresolved hashes.
+        Dict with resolved names, algorithm identified, and unresolved hashes.
     """
-    lookup = _build_lookup()
-    algos = algorithms or list(_HASH_ALGORITHMS.keys())
+    db = _load_db()
+    algos = algorithms or list(db.keys())
 
     resolved: list[dict[str, Any]] = []
     unresolved: list[int] = []
 
     for hval in hash_values:
+        hval_str = str(hval & 0xFFFFFFFF)
         found = False
         for algo in algos:
-            table = lookup.get(algo, {})
-            if hval in table:
+            table = db.get(algo, {})
+            if hval_str in table:
                 resolved.append({
                     "hash": f"0x{hval:08x}",
-                    "api_name": table[hval],
+                    "api_name": table[hval_str],
                     "algorithm": algo,
                 })
                 found = True
@@ -186,5 +85,6 @@ def resolve_api_hashes(
         "unresolved_count": len(unresolved),
         "resolved": resolved,
         "unresolved": [f"0x{h:08x}" for h in unresolved[:50]],
-        "algorithms_checked": algos,
+        "algorithms_available": len(db),
+        "algorithms_checked": len(algos),
     }
