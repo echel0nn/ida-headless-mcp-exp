@@ -117,6 +117,7 @@ server.py (59 tools, pure cache reader, ZERO idalib imports)
   |-- cache_reader.py (read cached results from filesystem)
   |-- lifecycle.py (binary state machine, worker management)
   |-- mutations.py (write queue, generation counter)
+  |-- ctree_to_smt.py (CTree AST to SMT-LIB compiler)
   |
   | spawns subprocess per binary
   v
@@ -124,19 +125,21 @@ binary_worker.py (owns one .i64, processes queue, writes cache)
   |
   |-- session.py (IDA analysis engine, 2100+ lines)
   |-- hexrays_analysis.py (CTree, microcode, taint, assessment)
-  |-- detection.py (obfuscation, crypto)
+  |-- detection.py (obfuscation, crypto detection)
   |-- proof.py (SMT proofs via binbit)
   |-- recovery.py (CFG, class hierarchy, protocol)
+  |-- api_hashes.py (API hash resolution)
   |-- function_index.py (per-binary function metadata)
   |-- diff.py (structural binary comparison)
+  |-- smt_prover.py (binbit solver interface)
 ```
 
 Key principle: **server never touches IDA**. All IDA work happens in worker subprocesses. Server reads from cache, returns instantly.
 
 ## Tool Categories (59 total)
 
-### Binary Lifecycle (5)
-`open_binary`, `close_binary`, `list_binaries`, `poll_analysis`, `binary_metadata`
+### Binary Lifecycle (6)
+`open_binary`, `close_binary`, `list_binaries`, `poll_analysis`, `binary_metadata`, `worker_status`
 
 ### Function Analysis (8)
 `list_functions`, `decompile`, `batch_decompile`, `stack_frame`, `xrefs_to`, `xrefs_from`, `call_graph`, `call_chain`
@@ -145,16 +148,16 @@ Key principle: **server never touches IDA**. All IDA work happens in worker subp
 `segments`, `checksec`, `imports`, `exports`, `binary_survey`, `entropy_analysis`
 
 ### Vulnerability Detection (3)
-`search_pattern` (10 bug families), `assess_exploitability`, `interprocedural_taint`
+`search_pattern` (10 bug families with confidence scoring), `assess_exploitability` (deep taint + validation gates + verdict), `interprocedural_taint`
 
-### SMT Proofs (4)
+### SMT Proofs via binbit (4)
 `prove_overflow`, `prove_bounds_sufficient`, `prove_predicate_opaque`, `prove_equivalence`
 
-### Deobfuscation (3)
-`detect_obfuscation`, `simplify_expression`, `recover_cfg`
+### Obfuscation Analysis (2)
+`detect_obfuscation` (CTree expression depth + MBA density), `recover_cfg`
 
-### Malware Analysis (5)
-`classify_behavior`, `detect_anti_analysis`, `classify_strings`, `detect_dynamic_resolution`, `detect_crypto_primitives`
+### Malware Analysis (7)
+`classify_behavior`, `detect_anti_analysis`, `classify_strings`, `detect_dynamic_resolution`, `detect_crypto_primitives`, `resolve_api_hashes`, `detect_library_functions`
 
 ### Hex-Rays Deep Analysis (7)
 `query_ctree`, `get_microcode`, `pseudocode_slice_view`, `trace_dataflow`, `def_use`, `value_ranges`, `hexrays_warnings`
@@ -163,16 +166,13 @@ Key principle: **server never touches IDA**. All IDA work happens in worker subp
 `path_feasibility`, `find_paths`, `constrained_reachability`
 
 ### Binary Diffing (3)
-`diff_binary`, `diff_function`, `diff_survey`
+`diff_binary`, `diff_function`, `diff_survey` (all server-side from cached indexes, no worker needed)
 
-### Recovery (3)
-`recover_class_hierarchy`, `detect_protocol_state_machine`, `detect_obfuscation`
+### C++ Recovery (2)
+`recover_class_hierarchy` (vtable xref analysis), `detect_protocol_state_machine`
 
 ### Mutations (8)
 `rename_function`, `rename_variable`, `set_comment`, `set_function_type`, `set_variable_type`, `patch_bytes`, `poll_mutation`, `get_generation`
-
-### Diagnostics (1)
-`worker_status`
 
 ## Usage Pattern
 
@@ -199,6 +199,23 @@ The non-blocking pattern:
 SMT proofs (binbit): 4-20ms typical.
 Pattern search (3000 functions): ~60s with decompile + verification.
 Warm cache reads: <1ms.
+
+## Inspired By
+
+Detection rules, algorithms, and capabilities are inspired by these projects. No code is copied or depended upon — all reimplemented using our own infrastructure (CTree visitors, binbit SMT, function index, ida_bytes).
+
+| Project | What We Took | License |
+|---|---|---|
+| [binbit](https://github.com/bint-disasm/binbit) | QF_BV SMT solver for overflow proofs and predicate analysis | MIT |
+| [d810-ng](https://github.com/w00tzenheimer/d810-ng) | OLLVM/Tigress detection signature patterns | GPL (patterns only, no code) |
+| [hrtng](https://github.com/KasperskyLab/hrtng) | API hash algorithm definitions (ROR13, DJB2, CRC32, FNV-1a, SDBM) | GPL (algorithms only) |
+| [HexRaysPyTools](https://github.com/igogo-x86/HexRaysPyTools) | Vtable detection algorithm (store-to-this+0 constructor pattern) | MIT (algorithm only) |
+| [Obpo](https://github.com/nickcano/obpo) | Per-block state solving approach for CFF deflattening | MIT (approach only) |
+| [VulFi](https://github.com/Accenture/VulFi) | Dangerous function xref pattern (our search_pattern surpasses it) | MIT |
+| [Diaphora](https://github.com/joxeankoret/diaphora) | Structure hashing concept for binary diffing (planned Phase 8) | GPL (concept only) |
+| [CAPA](https://github.com/mandiant/capa) | Behavioral rule format and ATT&CK mapping (planned Phase 8) | Apache-2.0 |
+| [FLOSS](https://github.com/mandiant/flare-floss) | Stack-string detection algorithm (planned Phase 8) | Apache-2.0 |
+| gooMBA (Hex-Rays built-in) | MBA deobfuscation runs automatically during decompile() | Bundled with IDA |
 
 ## License
 
