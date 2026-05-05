@@ -648,7 +648,7 @@ def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> d
     if lc:
         fe.lifecycle._worker_activity[lc.sha256] = __import__('time').monotonic()
     if lc and lc.state < BinaryState.READY:
-        return fe._pending(binary_id, lc)
+        return fe._pending(binary_id, lc, "not_ready")
     cached = fe.cache.get_result(sha, tool_name, key)
     if cached:
         cached["binary_id"] = binary_id
@@ -664,8 +664,8 @@ def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> d
             cached["_generation"] = staleness["generation"]
         return cached
     fe.cache.queue_request(sha, tool_name, {"binary_id": binary_id, "_cache_key": key, **params})
-    fe.lifecycle.ensure_worker(binary_id)
-    return fe._pending(binary_id, lc)
+    worker_action = fe.lifecycle.ensure_worker(binary_id)
+    return fe._pending(binary_id, lc, worker_action)
 
 
 @mcp.tool()
