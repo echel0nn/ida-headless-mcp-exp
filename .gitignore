@@ -47,3 +47,4 @@ evidence/
 poc/
 tools/
 tools/binbit-src/
+test_binaries/*.exe
