@@ -1105,6 +1105,22 @@ def recover_cfg(binary_id: str, address_or_name: str) -> dict:
 
 
 @mcp.tool()
+def capa_scan(binary_id: str) -> dict:
+    """Evaluate 678 behavioral rules against the binary (CAPA-derived).
+
+    Checks function callees and string references against 678 rules
+    covering 106 ATT&CK techniques. No CAPA binary needed.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Matched capabilities with ATT&CK mapping and triggering functions.
+    """
+    return _ida_tool("capa_scan", binary_id)
+
+
+@mcp.tool()
 def resolve_api_hashes(binary_id: str) -> dict:
     """Resolve hash-imported API names (CRC32, DJB2, ROR13, FNV-1a, SDBM).
 
