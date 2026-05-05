@@ -215,12 +215,10 @@ class LifecycleManager:
         Enforces max_workers limit. If at capacity, evicts the
         least-recently-active worker to make room.
         """
-        # Already running?
+        # Already running? Only trust our own tracked processes.
         existing = self._worker_procs.get(lc.sha256)
         if existing is not None and existing.poll() is None:
             self._worker_activity[lc.sha256] = time.monotonic()
-            return
-        if lc.decompile_worker_pid is not None and _pid_alive(lc.decompile_worker_pid):
             return
 
         # Enforce max_workers — evict LRU if at capacity
@@ -383,6 +381,7 @@ class LifecycleManager:
                 if lc.state >= BinaryState.READY and has_pending:
                     self._start_binary_worker(lc)
                 recovered.append(lc)
+        return recovered
 
     def get(self, binary_id: str) -> BinaryLifecycle | None:
         return self._lifecycles.get(binary_id)
