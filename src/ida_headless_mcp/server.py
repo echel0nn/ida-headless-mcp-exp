@@ -1073,12 +1073,6 @@ def recover_cfg(binary_id: str, address_or_name: str) -> dict:
 
 
 @mcp.tool()
-def recover_class_hierarchy(binary_id: str) -> dict:
-    """Recover C++ class hierarchy from vtable cross-reference analysis."""
-    return _ida_tool("recover_class_hierarchy", binary_id)
-
-
-@mcp.tool()
 def detect_protocol_state_machine(binary_id: str, address_or_name: str) -> dict:
     """Detect network protocol state machine patterns in a function."""
     return _ida_tool("detect_protocol_state_machine", binary_id, key=address_or_name,
@@ -1116,14 +1110,6 @@ def prove_equivalence(binary_id: str, expr_a: str, expr_b: str, address_or_name:
     key = f"{address_or_name}_equiv"
     return _ida_tool("prove_equivalence", binary_id, key=key,
                      address_or_name=address_or_name, expr_a=expr_a, expr_b=expr_b)
-
-
-@mcp.tool()
-def simplify_expression(binary_id: str, address_or_name: str, expression: str) -> dict:
-    """Simplify an obfuscated expression by proving equivalence to simpler forms."""
-    key = f"{address_or_name}_simplify"
-    return _ida_tool("simplify_expression", binary_id, key=key,
-                     address_or_name=address_or_name, expression=expression)
 
 
 @mcp.tool()
