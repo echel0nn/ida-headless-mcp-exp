@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,10 @@ POLL_INTERVAL = 0.3
 HEARTBEAT_INTERVAL = 2.0  # seconds between heartbeat writes
 CODE_CHECK_INTERVAL = 10.0  # seconds between source mtime checks
 
+
+# Global mutable phase — the heartbeat thread reads this to know what to write
+_current_phase: str = "starting"
+_current_request: str = ""
 
 
 def _write_heartbeat(sha_dir: Path, status: str, current_request: str = "") -> None:
@@ -72,6 +77,14 @@ def _source_code_changed(start_time: float) -> bool:
     return False
 
 
+def _heartbeat_thread(sha_dir: Path, stop_event: threading.Event) -> None:
+    """Background thread that writes heartbeat every 2s using global phase."""
+    global _current_phase, _current_request
+    while not stop_event.is_set():
+        _write_heartbeat(sha_dir, _current_phase, _current_request)
+        stop_event.wait(HEARTBEAT_INTERVAL)
+
+
 def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     """Run the worker loop: open the .i64, process queued requests, write cache.
 
@@ -91,8 +104,16 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
         sys.exit(1)
     binary_path = exe_files[0]
 
+    # Start background heartbeat thread — writes every 2s regardless of main thread
+    global _current_phase, _current_request
+    _current_phase = "bootstrapping_idalib"
+    stop_heartbeat = threading.Event()
+    hb_thread = threading.Thread(
+        target=_heartbeat_thread, args=(sha_dir, stop_heartbeat), daemon=True,
+    )
+    hb_thread.start()
+
     # Bootstrap IDA
-    _write_heartbeat(sha_dir, "bootstrapping_idalib")
     src_dir = Path(__file__).resolve().parent.parent
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
@@ -118,10 +139,11 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
                 pass
 
     # Open database
-    _write_heartbeat(sha_dir, "loading_database")
+    _current_phase = "loading_database"
     rc = ida_mod.open_database(str(binary_path), True)
     if rc != 0:
         _update_state(sha_dir, error=f"open_database failed with code {rc}")
+        stop_heartbeat.set()
         sys.exit(1)
 
     import ida_funcs
@@ -137,13 +159,14 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     # Build index if not cached
     index_path = sha_dir / "index.json"
     if not index_path.exists():
-        _write_heartbeat(sha_dir, "building_index")
+        _current_phase = "building_index"
         from ida_headless_mcp.function_index import build_function_index
         index = build_function_index()
         index.save(index_path)
         _update_state(sha_dir, state="INDEXED", function_count=func_count)
 
     # Main loop: process requests from queue
+    _current_phase = "idle"
     decompile_dir = sha_dir / "decompile"
     decompile_dir.mkdir(parents=True, exist_ok=True)
     results_dir = sha_dir / "results"
@@ -158,15 +181,13 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
 
     gen = Generation(sha_dir)
     last_activity = time.monotonic()
-    last_heartbeat = 0.0
     last_code_check = 0.0
     worker_start_time = time.time()
 
-    _write_heartbeat(sha_dir, "ready")
-
     while True:
         if time.monotonic() - last_activity > idle_timeout:
-            _write_heartbeat(sha_dir, "exiting_idle")
+            _current_phase = "exiting_idle"
+            time.sleep(HEARTBEAT_INTERVAL + 0.5)  # let heartbeat thread write it
             break
 
         # Code-change detection: exit if source files are newer than start
@@ -174,13 +195,9 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
         if now - last_code_check > CODE_CHECK_INTERVAL:
             last_code_check = now
             if _source_code_changed(worker_start_time):
-                _write_heartbeat(sha_dir, "exiting_code_change")
+                _current_phase = "exiting_code_change"
+                time.sleep(HEARTBEAT_INTERVAL + 0.5)
                 break
-
-        # Heartbeat
-        if now - last_heartbeat > HEARTBEAT_INTERVAL:
-            _write_heartbeat(sha_dir, "idle")
-            last_heartbeat = now
 
         processed = False
         processed |= _consume_queue(
@@ -220,9 +237,15 @@ def _consume_queue(queue_path: Path, handler, sha_dir: Path) -> bool:
         try:
             req = json.loads(line)
             req_type = req.get("type", "unknown")
-            _write_heartbeat(sha_dir, "processing", req_type)
+            global _current_phase, _current_request
+            _current_phase = f"processing:{req_type}"
+            _current_request = req_type
             handler(req)
+            _current_phase = "idle"
+            _current_request = ""
         except Exception as exc:
+            _current_phase = "idle"
+            _current_request = ""
             req_type = "unknown"
             try:
                 req_type = json.loads(line).get("type", "unknown")
