@@ -1268,6 +1268,69 @@ class IDABinarySessionManager:
         result["binary_id"] = binary_id
         return result
 
+    @requires(BinaryState.ACTIVE)
+    def generate_yara_rule(self, binary_id: str, address_or_name: str) -> dict:
+        """Generate a YARA rule from a function's byte pattern."""
+        import hashlib
+
+        import ida_bytes
+        import ida_funcs
+        import ida_name
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        func_bytes = ida_bytes.get_bytes(func.start_ea, min(func.size(), 200))
+        if not func_bytes:
+            return {"binary_id": binary_id, "error": "Could not read bytes"}
+        func_name = ida_name.get_ea_name(func.start_ea) or f"sub_{func.start_ea:x}"
+        safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in func_name)
+        hex_string = " ".join(f"{b:02X}" for b in func_bytes)
+        sha = hashlib.sha256(func_bytes).hexdigest()[:16]
+        rule = (
+            f"rule {safe_name}_{sha} {{\n"
+            f"    meta:\n"
+            f"        description = \"Auto-generated from {func_name}\"\n"
+            f"        address = \"0x{func.start_ea:x}\"\n"
+            f"        size = {func.size()}\n"
+            f"    strings:\n"
+            f"        $pattern = {{ {hex_string} }}\n"
+            f"    condition:\n"
+            f"        $pattern\n"
+            f"}}"
+        )
+        return {
+            "binary_id": binary_id, "function": func_name,
+            "address": f"0x{func.start_ea:x}", "size": func.size(),
+            "rule": rule, "pattern_bytes": len(func_bytes),
+        }
+
+    @requires(BinaryState.ACTIVE)
+    def patch_assemble(self, binary_id: str, address: str, assembly: str) -> dict:
+        """Assemble instructions and patch at address."""
+        import ida_bytes
+        import ida_idp
+
+        ea = int(address.strip(), 16)
+        instructions = [i.strip() for i in assembly.split(";") if i.strip()]
+        patched = []
+        current_ea = ea
+        for insn_text in instructions:
+            ok, code_bytes = ida_idp.assemble(current_ea, 0, current_ea, True, insn_text)
+            if not ok or not code_bytes:
+                return {"binary_id": binary_id, "error": f"Failed: {insn_text}", "patched": patched}
+            ida_bytes.patch_bytes(current_ea, bytes(code_bytes))
+            patched.append({
+                "address": f"0x{current_ea:x}", "instruction": insn_text,
+                "bytes": code_bytes.hex(), "size": len(code_bytes),
+            })
+            current_ea += len(code_bytes)
+        return {
+            "binary_id": binary_id, "address": address,
+            "instructions_patched": len(patched), "patches": patched,
+        }
+
     @requires(BinaryState.INDEXED)
     def capa_scan(self, binary_id: str) -> dict:
         """Evaluate 678 CAPA behavioral rules against the binary."""

@@ -1105,6 +1105,20 @@ def recover_cfg(binary_id: str, address_or_name: str) -> dict:
 
 
 @mcp.tool()
+def generate_yara_rule(binary_id: str, address_or_name: str) -> dict:
+    """Generate a YARA detection rule from function bytes."""
+    return _ida_tool("generate_yara_rule", binary_id, key=address_or_name,
+                     address_or_name=address_or_name)
+
+
+@mcp.tool()
+def patch_assemble(binary_id: str, address: str, assembly: str) -> dict:
+    """Assemble instructions and patch at address (e.g., \"nop; nop; ret\")."""
+    return _ida_tool("patch_assemble", binary_id, key=address,
+                     address=address, assembly=assembly)
+
+
+@mcp.tool()
 def capa_scan(binary_id: str) -> dict:
     """Evaluate 678 behavioral rules against the binary (CAPA-derived).
 

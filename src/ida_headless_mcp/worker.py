@@ -189,6 +189,8 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
         "recover_cfg": lambda p: mgr.recover_cfg(
             p["binary_id"], p["address_or_name"],
         ),
+        "generate_yara_rule": lambda p: mgr.generate_yara_rule(p["binary_id"], p["address_or_name"]),
+        "patch_assemble": lambda p: mgr.patch_assemble(p["binary_id"], p["address"], p["assembly"]),
         "capa_scan": lambda p: mgr.capa_scan(p["binary_id"]),
         "resolve_api_hashes": lambda p: mgr.resolve_api_hashes(p["binary_id"]),
         "detect_library_functions": lambda p: mgr.detect_library_functions(p["binary_id"]),
