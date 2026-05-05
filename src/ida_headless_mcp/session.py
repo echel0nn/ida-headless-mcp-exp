@@ -1269,6 +1269,21 @@ class IDABinarySessionManager:
         return result
 
     @requires(BinaryState.INDEXED)
+    def capa_scan(self, binary_id: str) -> dict:
+        """Evaluate 678 CAPA behavioral rules against the binary."""
+        from .capa_rules import capa_scan
+        idx = self._indices.get(binary_id)
+        if not idx:
+            return {"binary_id": binary_id, "matches": 0, "capabilities": []}
+        entries = [
+            {"name": e.name, "callees": list(e.callees), "string_refs": list(e.string_refs)}
+            for e in idx.entries
+        ]
+        result = capa_scan(entries)
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.INDEXED)
     def resolve_api_hashes(self, binary_id: str) -> dict:
         """Resolve hash-imported API names by scanning code for constants."""
         import ida_funcs

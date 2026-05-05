@@ -189,6 +189,7 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
         "recover_cfg": lambda p: mgr.recover_cfg(
             p["binary_id"], p["address_or_name"],
         ),
+        "capa_scan": lambda p: mgr.capa_scan(p["binary_id"]),
         "resolve_api_hashes": lambda p: mgr.resolve_api_hashes(p["binary_id"]),
         "detect_library_functions": lambda p: mgr.detect_library_functions(p["binary_id"]),
         "recover_class_hierarchy": lambda p: mgr.recover_class_hierarchy(p["binary_id"]),
