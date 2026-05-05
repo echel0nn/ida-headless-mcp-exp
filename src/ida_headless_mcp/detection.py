@@ -99,16 +99,38 @@ def detect_crypto_primitives(
     """
     primitives: list[dict[str, Any]] = []
 
-    # Scan data sections for known constants
+    # Load signature database
+    import json as _json
+    from pathlib import Path as _Path
+    sig_path = _Path(__file__).parent.parent.parent / "data" / "crypto_sigs.json"
+    sigs: list[dict] = []
+    if sig_path.exists():
+        sigs = _json.loads(sig_path.read_text(encoding="utf-8"))
+
+    # Scan data sections against all signatures
     for addr, data in data_bytes:
-        # AES S-box (256 bytes starting with 0x63, 0x7C, 0x77, 0x7B)
-        idx = data.find(bytes([0x63, 0x7C, 0x77, 0x7B]))
-        if idx >= 0 and len(data) >= idx + 256:
-            primitives.append({
-                "type": "aes_sbox",
-                "address": f"0x{addr + idx:x}",
-                "confidence": "high",
-            })
+        for sig in sigs:
+            pattern = bytes.fromhex(sig["bytes"][:32])  # first 16 bytes for matching
+            idx = data.find(pattern)
+            if idx >= 0:
+                primitives.append({
+                    "type": sig["name"],
+                    "algorithm": sig["algo"],
+                    "address": f"0x{addr + idx:x}",
+                    "confidence": "high",
+                })
+                break  # one match per data section per signature
+
+        # Fallback: AES S-box (most common, ensure it's always checked)
+        if not any(p.get("type") == "AES_S_box" for p in primitives):
+            idx = data.find(bytes([0x63, 0x7C, 0x77, 0x7B]))
+            if idx >= 0 and len(data) >= idx + 256:
+                primitives.append({
+                    "type": "AES_S_box",
+                    "algorithm": "AES",
+                    "address": f"0x{addr + idx:x}",
+                    "confidence": "high",
+                })
 
         # SHA-256 K constants
         for i in range(len(data) - 16):
