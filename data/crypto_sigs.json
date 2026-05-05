@@ -1,0 +1,230 @@
+[
+  {
+    "name": "AES_S_box",
+    "bytes": "637c777bf26b6fc53001672bfed7ab76",
+    "size": 256,
+    "algo": "AES"
+  },
+  {
+    "name": "AES_inv_S_box",
+    "bytes": "52096ad53036a538bf40a39e81f3d7fb",
+    "size": 256,
+    "algo": "AES"
+  },
+  {
+    "name": "AES_Rcon",
+    "bytes": "01020408102040801b36",
+    "size": 10,
+    "algo": "AES"
+  },
+  {
+    "name": "SHA256_K",
+    "bytes": "428a2f9871374491b5c0fbcfe9b5dba5",
+    "size": 256,
+    "algo": "SHA-256"
+  },
+  {
+    "name": "SHA256_H0",
+    "bytes": "6a09e667bb67ae853c6ef372a54ff53a",
+    "size": 32,
+    "algo": "SHA-256"
+  },
+  {
+    "name": "SHA1_H0",
+    "bytes": "67452301efcdab8998badcfe10325476c3d2e1f0",
+    "size": 20,
+    "algo": "SHA-1"
+  },
+  {
+    "name": "SHA512_K",
+    "bytes": "428a2f98d728ae227137449123ef65cd",
+    "size": 640,
+    "algo": "SHA-512"
+  },
+  {
+    "name": "MD5_T",
+    "bytes": "d76aa478e8c7b756242070dbc1bdceee",
+    "size": 256,
+    "algo": "MD5"
+  },
+  {
+    "name": "MD5_H0",
+    "bytes": "67452301efcdab8998badcfe10325476",
+    "size": 16,
+    "algo": "MD5"
+  },
+  {
+    "name": "DES_IP",
+    "bytes": "3a32222a121a020a3c34242c141c040c",
+    "size": 64,
+    "algo": "DES"
+  },
+  {
+    "name": "DES_FP",
+    "bytes": "2800200818100800",
+    "size": 64,
+    "algo": "DES"
+  },
+  {
+    "name": "DES_S1",
+    "bytes": "0e0004000f0207010d06000b02000e0b",
+    "size": 64,
+    "algo": "DES"
+  },
+  {
+    "name": "Blowfish_P",
+    "bytes": "243f6a8885a308d313198a2e03707344",
+    "size": 72,
+    "algo": "Blowfish"
+  },
+  {
+    "name": "Blowfish_S0",
+    "bytes": "d1310ba698dfb5ac2ffd72dbd01adfb7",
+    "size": 4096,
+    "algo": "Blowfish"
+  },
+  {
+    "name": "RC4_init",
+    "bytes": "000102030405060708090a0b0c0d0e0f",
+    "size": 256,
+    "algo": "RC4"
+  },
+  {
+    "name": "CRC32_table_std",
+    "bytes": "0000000077073096ee0e612c990951ba",
+    "size": 1024,
+    "algo": "CRC32"
+  },
+  {
+    "name": "CRC32_poly_EDB88320",
+    "bytes": "2083b8ed",
+    "size": 4,
+    "algo": "CRC32"
+  },
+  {
+    "name": "CRC32_poly_04C11DB7",
+    "bytes": "b71dc104",
+    "size": 4,
+    "algo": "CRC32"
+  },
+  {
+    "name": "Camellia_SIGMA1",
+    "bytes": "a09e667f3bcc908b",
+    "size": 8,
+    "algo": "Camellia"
+  },
+  {
+    "name": "Camellia_SP1",
+    "bytes": "70707000",
+    "size": 1024,
+    "algo": "Camellia"
+  },
+  {
+    "name": "CAST_S1",
+    "bytes": "30fb40d49fa0ff0b6beccd2f3f258c7a",
+    "size": 1024,
+    "algo": "CAST-128"
+  },
+  {
+    "name": "Twofish_MDS",
+    "bytes": "bcbc3275ecec21f3202043c6b1b1a",
+    "size": 1024,
+    "algo": "Twofish"
+  },
+  {
+    "name": "SEED_KC",
+    "bytes": "9e3779b9",
+    "size": 4,
+    "algo": "SEED"
+  },
+  {
+    "name": "Serpent_phi",
+    "bytes": "9e3779b9",
+    "size": 4,
+    "algo": "Serpent"
+  },
+  {
+    "name": "TEA_delta",
+    "bytes": "b979379e",
+    "size": 4,
+    "algo": "TEA/XTEA"
+  },
+  {
+    "name": "Whirlpool_C0",
+    "bytes": "18186018c07830d8",
+    "size": 2048,
+    "algo": "Whirlpool"
+  },
+  {
+    "name": "RIPEMD160_H0",
+    "bytes": "67452301efcdab8998badcfe10325476c3d2e1f0",
+    "size": 20,
+    "algo": "RIPEMD-160"
+  },
+  {
+    "name": "ChaCha20_sigma",
+    "bytes": "61707865332073746279746573203332",
+    "size": 16,
+    "algo": "ChaCha20"
+  },
+  {
+    "name": "ChaCha20_tau",
+    "bytes": "61707865332073746279746573203136",
+    "size": 16,
+    "algo": "ChaCha20"
+  },
+  {
+    "name": "Salsa20_sigma",
+    "bytes": "61707865332073746279746573203332",
+    "size": 16,
+    "algo": "Salsa20"
+  },
+  {
+    "name": "Base64_alphabet",
+    "bytes": "4142434445464748494a4b4c4d4e4f505152535455565758595a6162636465666768696a6b6c6d6e6f707172737475767778797a303132333435363738392b2f",
+    "size": 64,
+    "algo": "Base64"
+  },
+  {
+    "name": "SM4_SBOX",
+    "bytes": "d690e9fecce13db716b614c228fb2c05",
+    "size": 256,
+    "algo": "SM4"
+  },
+  {
+    "name": "GOST_S_CryptoPro",
+    "bytes": "0a090d060e0b040500070c020108030f",
+    "size": 128,
+    "algo": "GOST"
+  },
+  {
+    "name": "Keccak_RC",
+    "bytes": "0100000000000000",
+    "size": 192,
+    "algo": "Keccak/SHA-3"
+  },
+  {
+    "name": "Adler32_mod",
+    "bytes": "f1ff0000",
+    "size": 4,
+    "algo": "Adler-32"
+  },
+  {
+    "name": "zlib_magic",
+    "bytes": "789c",
+    "size": 2,
+    "algo": "zlib"
+  },
+  {
+    "name": "GZip_magic",
+    "bytes": "1f8b",
+    "size": 2,
+    "algo": "GZip"
+  },
+  {
+    "name": "ARIA_S1",
+    "bytes": "63007c007700",
+    "size": 512,
+    "algo": "ARIA"
+  }
+]
