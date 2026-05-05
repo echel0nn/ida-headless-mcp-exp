@@ -66,6 +66,14 @@ class FunctionIndex:
         ]
         return cls(entries=entries)
 
+    def lookup(self, name: str) -> dict[str, Any] | None:
+        """Look up a function by name, returning its entry as a dict or None."""
+        name_lower = name.lower()
+        for entry in self.entries:
+            if entry.name.lower() == name_lower:
+                return _entry_to_json(entry)
+        return None
+
     def query(
         self,
         *,
