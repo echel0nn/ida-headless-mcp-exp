@@ -12,6 +12,7 @@ from typing import Any
 
 __all__ = [
     "recover_cfg",
+    "recover_class_hierarchy",
     "detect_protocol_state_machine",
 ]
 

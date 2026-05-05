@@ -1337,6 +1337,81 @@ class IDABinarySessionManager:
         }
 
     @requires(BinaryState.ACTIVE)
+    def recover_class_hierarchy(self, binary_id: str) -> dict[str, Any]:
+        """Recover C++ class hierarchy via CTree vtable pointer detection.
+
+        Algorithm (ported from HexRaysPyTools):
+        1. Find functions that write a constant pointer to this+0 (constructors)
+        2. The constant is a vtable address. Read vtable entries from .rdata.
+        3. If constructor calls another constructor first, that's the base class.
+        """
+        import ida_bytes
+        import ida_funcs
+        import ida_hexrays
+
+        from .recovery import recover_class_hierarchy
+
+        vtables: list[dict] = []
+        constructors: list[dict] = []
+
+        # Scan functions for vtable writes (store constant to this+0)
+        idx = self._indices.get(binary_id)
+        if not idx:
+            return {"binary_id": binary_id, "classes_found": 0, "classes": []}
+
+        for entry in idx.entries[:1000]:  # limit scan
+            if entry.is_library or entry.is_thunk:
+                continue
+            func = ida_funcs.get_func(entry.address)
+            if func is None or func.size() > 10000:
+                continue
+            try:
+                cfunc = ida_hexrays.decompile(func.start_ea)
+            except ida_hexrays.DecompilationFailure:
+                continue
+
+            # Look for *(_QWORD *)a1 = &vtable_addr pattern
+            pseudocode = str(cfunc)
+            if "*(_QWORD *)" not in pseudocode and "*(void **)" not in pseudocode:
+                continue
+            # Simple heuristic: function writes to first arg offset 0
+            import re
+            vtable_writes = re.findall(
+                r'\*\([^)]*\)\s*(?:a1|this)\s*=\s*&?(0x[0-9a-fA-F]+)',
+                pseudocode,
+            )
+            for vt in vtable_writes:
+                try:
+                    vt_addr = int(vt, 16)
+                except ValueError:
+                    continue
+                # Read vtable entries
+                entries = []
+                for i in range(50):  # max 50 methods
+                    ptr = ida_bytes.get_qword(vt_addr + i * 8)
+                    if ptr == 0:
+                        break
+                    fn = ida_funcs.get_func(ptr)
+                    if fn is None:
+                        break
+                    entries.append(f"0x{ptr:x}")
+                if len(entries) >= 2:
+                    vtables.append({"address": f"0x{vt_addr:x}", "entries": entries})
+                    constructors.append({
+                        "constructor": entry.name,
+                        "vtable": f"0x{vt_addr:x}",
+                    })
+
+        func_entries = [
+            {"address": f"0x{e.address:x}", "name": e.name}
+            for e in idx.entries
+        ]
+        result = recover_class_hierarchy(vtables[:100], func_entries)
+        result["binary_id"] = binary_id
+        result["constructors_found"] = constructors[:50]
+        return result
+
+    @requires(BinaryState.ACTIVE)
     def detect_protocol_state_machine(
         self, binary_id: str, address_or_name: str,
     ) -> dict[str, Any]:
