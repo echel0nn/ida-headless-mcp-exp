@@ -1268,6 +1268,74 @@ class IDABinarySessionManager:
         result["binary_id"] = binary_id
         return result
 
+    @requires(BinaryState.INDEXED)
+    def resolve_api_hashes(self, binary_id: str) -> dict:
+        """Resolve hash-imported API names in the binary."""
+        from .api_hashes import resolve_api_hashes
+        # Find constant values that look like hashes (32-bit values in code/data)
+        hash_candidates: list[int] = []
+        idx = self._indices.get(binary_id)
+        if idx:
+            for entry in idx.entries:
+                for sr in entry.string_refs:
+                    # Check if string ref is actually a hex constant
+                    if sr.startswith("0x") and len(sr) <= 10:
+                        try:
+                            hash_candidates.append(int(sr, 16))
+                        except ValueError:
+                            pass
+        # Also scan for push/mov of 32-bit constants in functions that call GetProcAddress
+        # (simplified: just try all 32-bit constants from string refs)
+        result = resolve_api_hashes(hash_candidates)
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.INDEXED)
+    def detect_library_functions(self, binary_id: str) -> dict:
+        """Aggregate library functions by detected library."""
+        idx = self._indices.get(binary_id)
+        if not idx:
+            return {"binary_id": binary_id, "libraries": [], "total_library": 0}
+        lib_funcs = [e for e in idx.entries if e.is_library]
+        # Group by name prefix
+        groups: dict[str, list[str]] = {}
+        prefixes = [
+            ("_ssl_", "OpenSSL"), ("SSL_", "OpenSSL"), ("EVP_", "OpenSSL"),
+            ("_z_", "zlib"), ("deflate", "zlib"), ("inflate", "zlib"),
+            ("_png_", "libpng"), ("png_", "libpng"),
+            ("_jpeg_", "libjpeg"), ("jpeg_", "libjpeg"),
+            ("_xml_", "libxml2"), ("xml", "libxml2"),
+            ("curl_", "libcurl"), ("CURL", "libcurl"),
+            ("sqlite3_", "SQLite"),
+            ("_mbedtls_", "mbedTLS"), ("mbedtls_", "mbedTLS"),
+            ("_gcry_", "libgcrypt"),
+            ("BIO_", "OpenSSL"), ("X509_", "OpenSSL"),
+            ("SHA256", "crypto"), ("MD5", "crypto"), ("AES_", "crypto"),
+        ]
+        crt_patterns = ["__", "_", "str", "mem", "wcs", "printf", "malloc", "free"]
+        for f in lib_funcs:
+            assigned = False
+            for prefix, lib in prefixes:
+                if f.name.startswith(prefix) or f.name.startswith("_" + prefix):
+                    groups.setdefault(lib, []).append(f.name)
+                    assigned = True
+                    break
+            if not assigned:
+                if any(f.name.startswith(p) for p in crt_patterns):
+                    groups.setdefault("CRT", []).append(f.name)
+                else:
+                    groups.setdefault("unknown", []).append(f.name)
+        libraries = [
+            {"name": name, "function_count": len(funcs), "functions": funcs[:10]}
+            for name, funcs in sorted(groups.items(), key=lambda x: -len(x[1]))
+        ]
+        return {
+            "binary_id": binary_id,
+            "total_library": len(lib_funcs),
+            "total_application": len(idx.entries) - len(lib_funcs),
+            "libraries": libraries,
+        }
+
     @requires(BinaryState.ACTIVE)
     def detect_protocol_state_machine(
         self, binary_id: str, address_or_name: str,
