@@ -189,7 +189,6 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
         "recover_cfg": lambda p: mgr.recover_cfg(
             p["binary_id"], p["address_or_name"],
         ),
-        "recover_class_hierarchy": lambda p: mgr.recover_class_hierarchy(p["binary_id"]),
         "detect_protocol_state_machine": lambda p: mgr.detect_protocol_state_machine(
             p["binary_id"], p["address_or_name"],
         ),
@@ -203,9 +202,6 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
         ),
         "prove_equivalence": lambda p: mgr.prove_equivalence(
             p["binary_id"], p.get("expr_a", ""), p.get("expr_b", ""), p["address_or_name"],
-        ),
-        "simplify_expression": lambda p: mgr.simplify_expression(
-            p["binary_id"], p["address_or_name"], p.get("expression", ""),
         ),
         "detect_obfuscation": lambda p: mgr.detect_obfuscation(
             p["binary_id"], p["address_or_name"],

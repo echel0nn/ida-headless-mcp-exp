@@ -158,22 +158,6 @@ def detect_crypto_primitives(
                 "confidence": "high",
             })
 
-    # XOR key detection — functions with tight XOR loops
-    for func in function_entries:
-        callees = {c.lower() for c in func.get("callees", [])}
-        size = func.get("size_bytes", 0)
-        complexity = func.get("cyclomatic_complexity", 0)
-        # Heuristic: small function, low complexity, no library calls
-        # that references XOR in its string refs = possible XOR cipher
-        if size < 200 and complexity <= 5 and not callees:
-            primitives.append({
-                "type": "possible_xor_cipher",
-                "address": func.get("address", ""),
-                "function": func.get("name", ""),
-                "confidence": "low",
-                "reason": "Small isolated function (possible XOR loop)",
-            })
-
     # String-based detection
     crypto_strings = [
         s for s in string_refs
