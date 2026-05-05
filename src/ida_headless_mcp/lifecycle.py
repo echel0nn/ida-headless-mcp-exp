@@ -460,16 +460,26 @@ class LifecycleManager:
 
 
 def _pid_alive(pid: int) -> bool:
-    """Check if a process is still running."""
+    """Check if a process is actually running (not just a stale handle).
+
+    On Windows, OpenProcess(SYNCHRONIZE) succeeds on dead processes.
+    Use GetExitCodeProcess to check for STILL_ACTIVE (259).
+    """
     if os.name == "nt":
         try:
             import ctypes
             kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(0x100000, False, pid)  # SYNCHRONIZE
-            if handle:
+            # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                # STILL_ACTIVE = 259 (0x103)
+                return exit_code.value == 259
+            finally:
                 kernel32.CloseHandle(handle)
-                return True
-            return False
         except Exception:
             return False
     else:
