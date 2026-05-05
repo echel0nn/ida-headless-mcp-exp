@@ -1254,6 +1254,57 @@ class IDABinarySessionManager:
         return result
 
     @requires(BinaryState.ACTIVE)
+    def prove_predicate_opaque(self, binary_id: str, address_or_name: str, condition_address: str) -> dict[str, Any]:
+        """Prove whether a branch condition is opaque."""
+        import ida_funcs
+        import re as _re
+        from .hexrays_analysis import decompile_cfunc
+        from .proof import prove_predicate_opaque
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        variables = sorted(set(_re.findall(r"\bv\d+\b", str(cfunc))))[:8]
+        result = prove_predicate_opaque(condition_address, variables)
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.ACTIVE)
+    def prove_equivalence(self, binary_id: str, expr_a: str, expr_b: str, address_or_name: str) -> dict[str, Any]:
+        """Prove two expressions equivalent."""
+        import ida_funcs
+        import re as _re
+        from .hexrays_analysis import decompile_cfunc
+        from .proof import prove_equivalence
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        variables = sorted(set(_re.findall(r"\bv\d+\b", str(cfunc))))[:8]
+        result = prove_equivalence(expr_a, expr_b, variables)
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.ACTIVE)
+    def simplify_expression(self, binary_id: str, address_or_name: str, expression: str) -> dict[str, Any]:
+        """Simplify obfuscated expression via SMT equivalence proofs."""
+        import ida_funcs
+        import re as _re
+        from .hexrays_analysis import decompile_cfunc
+        from .proof import simplify_expression
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        variables = sorted(set(_re.findall(r"\bv\d+\b", str(cfunc))))[:4]
+        result = simplify_expression(expression, variables)
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.ACTIVE)
     def detect_obfuscation(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
         """Detect obfuscation techniques in a function."""
         import ida_funcs
