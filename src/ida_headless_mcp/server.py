@@ -1105,6 +1105,25 @@ def recover_cfg(binary_id: str, address_or_name: str) -> dict:
 
 
 @mcp.tool()
+def detect_stack_strings(binary_id: str, address_or_name: str) -> dict:
+    """Detect strings constructed on the stack (hidden from static scan).
+
+    Scans disassembly for consecutive byte/dword stores to stack variables
+    that form printable ASCII when concatenated. Finds strings that malware
+    builds at runtime to evade static string extraction.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function to scan.
+
+    Returns:
+        Extracted stack-constructed strings with addresses.
+    """
+    return _ida_tool("detect_stack_strings", binary_id, key=address_or_name,
+                     address_or_name=address_or_name)
+
+
+@mcp.tool()
 def generate_yara_rule(binary_id: str, address_or_name: str) -> dict:
     """Generate a YARA detection rule from function bytes."""
     return _ida_tool("generate_yara_rule", binary_id, key=address_or_name,
