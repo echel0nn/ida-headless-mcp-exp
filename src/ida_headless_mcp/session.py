@@ -1336,40 +1336,151 @@ class IDABinarySessionManager:
 
     @requires(BinaryState.ACTIVE)
     def generate_yara_rule(self, binary_id: str, address_or_name: str) -> dict:
-        """Generate a YARA rule from a function's byte pattern."""
+        """Generate a YARA rule from function basic blocks with relocation masking.
+
+        Algorithm (ported from Willi Ballenthin / FLARE team):
+        1. Split function into basic blocks via FlowChart
+        2. For each BB, iterate instructions
+        3. Use ida_fixups to detect relocated bytes -> wildcard them
+        4. Wildcard entire call instructions (targets always change)
+        5. Drop trailing jumps from each BB
+        6. Skip BBs with fewer than 4 unmasked bytes
+        7. Condition: 'all of them' for precision, or N-of-M for resilience
+        """
         import hashlib
 
         import ida_bytes
         import ida_funcs
         import ida_name
+        import ida_ua
+        import idaapi
+        import idautils
+
+        MIN_BB_BYTE_COUNT = 4
 
         ea = _resolve_address(address_or_name)
         func = ida_funcs.get_func(ea)
         if func is None:
             raise ValueError(f"No function at {address_or_name!r}")
-        func_bytes = ida_bytes.get_bytes(func.start_ea, min(func.size(), 200))
-        if not func_bytes:
-            return {"binary_id": binary_id, "error": "Could not read bytes"}
+
         func_name = ida_name.get_ea_name(func.start_ea) or f"sub_{func.start_ea:x}"
         safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in func_name)
-        hex_string = " ".join(f"{b:02X}" for b in func_bytes)
-        sha = hashlib.sha256(func_bytes).hexdigest()[:16]
+
+        def _is_jump(va: int) -> bool:
+            """Check if instruction at va is a jump."""
+            mnem = ida_ua.ua_mnem(va) or ""
+            return mnem.startswith("j")
+
+        def _is_call(va: int) -> bool:
+            """Check if instruction at va is a call."""
+            mnem = ida_ua.ua_mnem(va) or ""
+            return mnem == "call"
+
+        def _get_fixup_byte_addrs(va: int, size: int) -> set:
+            """Get set of byte addresses that have fixup/relocation info."""
+            addrs = set()
+            if not idaapi.contains_fixups(va, size):
+                return addrs
+            fixup_ea = idaapi.get_next_fixup_ea(va)
+            while fixup_ea < va + size:
+                # Fixup is typically 4 bytes (32-bit reloc) or 8 bytes
+                fixup_size = 4  # Conservative default for x86_64 RIP-relative
+                for i in range(fixup_size):
+                    addrs.add(fixup_ea + i)
+                fixup_ea = idaapi.get_next_fixup_ea(fixup_ea + fixup_size)
+            return addrs
+
+        def _mask_basic_block(bb_start: int, bb_end: int) -> list:
+            """Generate masked hex bytes for one basic block."""
+            masked = []
+            insn_vas = []
+            va = bb_start
+            while va < bb_end and va != idaapi.BADADDR:
+                insn_vas.append(va)
+                va = ida_bytes.next_head(va, bb_end)
+
+            if not insn_vas:
+                return masked
+
+            # Drop trailing jump
+            if _is_jump(insn_vas[-1]):
+                insn_vas = insn_vas[:-1]
+
+            for va in insn_vas:
+                size = ida_bytes.get_item_size(va)
+                raw = ida_bytes.get_bytes(va, size)
+                if not raw:
+                    continue
+
+                if _is_call(va):
+                    # Wildcard entire call instruction
+                    masked.extend(["??"] * size)
+                else:
+                    fixup_addrs = _get_fixup_byte_addrs(va, size)
+                    for i, b in enumerate(raw):
+                        if (va + i) in fixup_addrs:
+                            masked.append("??")
+                        else:
+                            masked.append(f"{b:02X}")
+
+            return masked
+
+        # Generate per-basic-block patterns
+        bb_rules = []
+        for bb in idaapi.FlowChart(func):
+            masked = _mask_basic_block(bb.start_ea, bb.end_ea)
+            # Count non-masked bytes
+            unmasked = sum(1 for b in masked if b != "??")
+            if unmasked < MIN_BB_BYTE_COUNT:
+                continue
+            bb_rules.append((bb.start_ea, masked))
+
+        if not bb_rules:
+            return {"binary_id": binary_id, "error": "No suitable basic blocks"}
+
+        # Build rule
+        sha = hashlib.sha256(
+            ida_bytes.get_bytes(func.start_ea, min(func.size(), 64)) or b""
+        ).hexdigest()[:12]
+
+        strings_lines = []
+        for i, (bb_va, masked) in enumerate(bb_rules):
+            hex_str = " ".join(masked)
+            strings_lines.append(
+                f"        $bb_{i}_0x{bb_va:x} = {{ {hex_str} }}"
+            )
+        strings_block = "\n".join(strings_lines)
+
+        # Condition: all BBs for precision, or 2/3 if many blocks
+        n_blocks = len(bb_rules)
+        if n_blocks <= 3:
+            condition = "all of them"
+        else:
+            threshold = max(2, n_blocks * 2 // 3)
+            condition = f"{threshold} of them"
+
         rule = (
             f"rule {safe_name}_{sha} {{\n"
             f"    meta:\n"
             f"        description = \"Auto-generated from {func_name}\"\n"
             f"        address = \"0x{func.start_ea:x}\"\n"
             f"        size = {func.size()}\n"
+            f"        basic_blocks = {n_blocks}\n"
             f"    strings:\n"
-            f"        $pattern = {{ {hex_string} }}\n"
+            f"{strings_block}\n"
             f"    condition:\n"
-            f"        $pattern\n"
+            f"        {condition}\n"
             f"}}"
         )
+
+        total_bytes = sum(len(m) for _, m in bb_rules)
+        wildcarded = sum(1 for _, m in bb_rules for b in m if b == "??")
+
         return {
             "binary_id": binary_id, "function": func_name,
             "address": f"0x{func.start_ea:x}", "size": func.size(),
-            "rule": rule, "pattern_bytes": len(func_bytes),
+            "rule": rule, "basic_blocks": n_blocks,
+            "wildcarded_bytes": wildcarded, "total_bytes": total_bytes,
         }
 
     @requires(BinaryState.ACTIVE)
