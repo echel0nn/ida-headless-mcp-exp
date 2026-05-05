@@ -158,14 +158,15 @@ def _build_overflow_script(
         lines.append(f"(declare-const {var} (_ BitVec {width}))")
     lines.append("")
 
-    # Encode gates as constraints
+    # Gates represent conditions that DIVERT control flow (return/break).
+    # At the sink, none of them fired, so their NEGATIONS hold.
     for gate in gates:
         gate_type = gate.get("gate_type", "")
         cond = gate.get("condition", "")
         smt_constraint = _gate_to_smt(cond, gate_type, all_vars, width)
         if smt_constraint:
-            lines.append(f"; Gate: {cond[:60]}")
-            lines.append(f"(assert {smt_constraint})")
+            lines.append(f"; At sink, gate did NOT fire: NOT({cond[:40]})")
+            lines.append(f"(assert (not {smt_constraint}))")
 
     # Default constraints: operands are positive (common for sizes)
     for op in operands:
@@ -642,7 +643,7 @@ def prove_bounds_sufficient(
         smt = _gate_to_smt(cond, gate.get("gate_type", ""), all_vars, width)
         if smt:
             lines.append(f"; Gate: {cond[:50]}")
-            lines.append(f"(assert {smt})")
+            lines.append(f"(assert (not {smt}))")
             gates_encoded += 1
 
     if gates_encoded == 0:
