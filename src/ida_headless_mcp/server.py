@@ -741,10 +741,19 @@ def diff_binary(binary_id_old: str, binary_id_new: str) -> dict:
         lc = fe.lifecycle.get(bid)
         if lc and lc.state < BinaryState.READY:
             return fe._pending(bid, lc)
-    return _ida_tool(
-        "diff_binary", binary_id_old,
-        key=binary_id_new, binary_id_new=binary_id_new,
-    )
+    # Server-side diff from cached indexes (no worker needed)
+    sha_old = fe._sha(binary_id_old)
+    sha_new = fe._sha(binary_id_new)
+    idx_old = fe.cache.load_index(sha_old)
+    idx_new = fe.cache.load_index(sha_new)
+    if idx_old is None or idx_new is None:
+        return {"status": "error", "message": "Index not cached for one or both binaries."}
+    from .diff import diff_indexes
+    result = diff_indexes(idx_old, idx_new)
+    result["binary_id_old"] = binary_id_old
+    result["binary_id_new"] = binary_id_new
+    result["status"] = "ready"
+    return result
 
 
 @mcp.tool()
@@ -769,15 +778,24 @@ def diff_function(
             fe._sha(bid)
         except KeyError:
             return {"status": "error", "message": f"Unknown binary_id: {bid}"}
-        lc = fe.lifecycle.get(bid)
-        if lc and lc.state < BinaryState.READY:
-            return fe._pending(bid, lc)
-    key = f"{address_or_name_old}_{binary_id_new}_{address_or_name_new}"
-    return _ida_tool(
-        "diff_function", binary_id_old, key=key,
-        binary_id_new=binary_id_new, address_or_name_old=address_or_name_old,
-        address_or_name_new=address_or_name_new, max_lines=max_lines,
-    )
+    sha_old = fe._sha(binary_id_old)
+    sha_new = fe._sha(binary_id_new)
+    old_decomp = fe.cache.get_decompile(sha_old, address_or_name_old)
+    new_decomp = fe.cache.get_decompile(sha_new, address_or_name_new)
+    if old_decomp is None or new_decomp is None:
+        if old_decomp is None:
+            fe.cache.queue_decompile(sha_old, address_or_name_old)
+            fe.lifecycle.ensure_worker(binary_id_old)
+        if new_decomp is None:
+            fe.cache.queue_decompile(sha_new, address_or_name_new)
+            fe.lifecycle.ensure_worker(binary_id_new)
+        return {"status": "pending", "message": "Decompiling. Retry."}
+    from .diff import diff_function_payloads
+    result = diff_function_payloads(old_decomp, new_decomp)
+    result["binary_id_old"] = binary_id_old
+    result["binary_id_new"] = binary_id_new
+    result["status"] = "ready"
+    return result
 
 
 @mcp.tool()
@@ -805,14 +823,28 @@ def diff_survey(
             fe._sha(bid)
         except KeyError:
             return {"status": "error", "message": f"Unknown binary_id: {bid}"}
-        lc = fe.lifecycle.get(bid)
-        if lc and lc.state < BinaryState.READY:
-            return fe._pending(bid, lc)
-    return _ida_tool(
-        "diff_survey", binary_id_old, key=binary_id_new,
-        binary_id_new=binary_id_new, max_changed=max_changed,
-        include_pseudocode_diff=include_pseudocode_diff,
-    )
+    binary_result = diff_binary(binary_id_old, binary_id_new)
+    if binary_result.get("status") != "ready":
+        return binary_result
+    changed = binary_result.get("changed", [])[:max_changed]
+    enriched = []
+    for entry in changed:
+        item = dict(entry)
+        if include_pseudocode_diff:
+            fn_diff = diff_function(
+                binary_id_old, entry.get("address_old", ""),
+                binary_id_new, entry.get("address_new", ""),
+            )
+            if fn_diff.get("status") == "ready":
+                item["diff_preview"] = fn_diff.get("diff_unified", "")[:2000]
+        enriched.append(item)
+    return {
+        "binary_id_old": binary_id_old,
+        "binary_id_new": binary_id_new,
+        "summary": binary_result.get("summary", {}),
+        "changed": enriched,
+        "status": "ready",
+    }
 
 
 @mcp.tool()

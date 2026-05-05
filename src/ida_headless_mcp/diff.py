@@ -14,6 +14,7 @@ __all__ = [
     "build_function_fingerprint",
     "compare_function_entries",
     "diff_binary_indexes",
+    "diff_indexes",
     "diff_function_payloads",
     "rank_security_relevance",
 ]
@@ -397,3 +398,26 @@ def rank_security_relevance(pair: FunctionPairMatch) -> float:
     elif pair.similarity < 0.85:
         score += 1.0
     return round(min(10.0, score), 2)
+
+
+
+def diff_indexes(
+    old_json: list[dict[str, Any]],
+    new_json: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Diff two function indexes from raw JSON (server-side, no IDA)."""
+    def _to_entry(r: dict) -> FunctionIndexEntry:
+        return FunctionIndexEntry(
+            address=int(r.get('address', '0x0'), 16),
+            name=r.get('name', ''),
+            size_bytes=r.get('size_bytes', 0),
+            cyclomatic_complexity=r.get('cyclomatic_complexity', 0),
+            is_thunk=r.get('is_thunk', False),
+            is_library=r.get('is_library', False),
+            callers=tuple(r.get('callers', ())),
+            callees=tuple(r.get('callees', ())),
+            string_refs=tuple(r.get('string_refs', ())),
+        )
+    old = [_to_entry(r) for r in old_json]
+    new = [_to_entry(r) for r in new_json]
+    return diff_binary_indexes(old, new)
