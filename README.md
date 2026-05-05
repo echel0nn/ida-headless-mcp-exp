@@ -1,6 +1,6 @@
 # ida-headless-mcp
 
-Non-blocking binary analysis MCP server for IDA Pro 9.0. 58 tools. Multi-agent safe. No plugins required.
+Non-blocking binary analysis MCP server for IDA Pro 9.0. 59 tools. Multi-agent safe. No plugins required.
 
 ## Why This Exists
 
@@ -112,7 +112,7 @@ Agent (Claude/Cursor/any MCP client)
   |
   | MCP protocol (stdio or streamable-http)
   v
-server.py (58 tools, pure cache reader, ZERO idalib imports)
+server.py (59 tools, pure cache reader, ZERO idalib imports)
   |
   |-- cache_reader.py (read cached results from filesystem)
   |-- lifecycle.py (binary state machine, worker management)
@@ -133,7 +133,7 @@ binary_worker.py (owns one .i64, processes queue, writes cache)
 
 Key principle: **server never touches IDA**. All IDA work happens in worker subprocesses. Server reads from cache, returns instantly.
 
-## Tool Categories (58 total)
+## Tool Categories (59 total)
 
 ### Binary Lifecycle (5)
 `open_binary`, `close_binary`, `list_binaries`, `poll_analysis`, `binary_metadata`
