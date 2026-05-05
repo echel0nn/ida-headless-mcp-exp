@@ -985,6 +985,43 @@ def constrained_reachability(
 
 
 @mcp.tool()
+def recover_cfg(binary_id: str, address_or_name: str) -> dict:
+    """Recover true control flow from a flattened function via state analysis."""
+    return _ida_tool("recover_cfg", binary_id, key=address_or_name,
+                     address_or_name=address_or_name)
+
+
+@mcp.tool()
+def recover_class_hierarchy(binary_id: str) -> dict:
+    """Recover C++ class hierarchy from vtable cross-reference analysis."""
+    return _ida_tool("recover_class_hierarchy", binary_id)
+
+
+@mcp.tool()
+def detect_protocol_state_machine(binary_id: str, address_or_name: str) -> dict:
+    """Detect network protocol state machine patterns in a function."""
+    return _ida_tool("detect_protocol_state_machine", binary_id, key=address_or_name,
+                     address_or_name=address_or_name)
+
+
+@mcp.tool()
+def prove_bounds_sufficient(
+    binary_id: str, address_or_name: str,
+    sink_function: str, sink_argument_index: int,
+) -> dict:
+    """Prove whether validation gates are mathematically sufficient to prevent overflow.
+
+    UNSAT = gates prevent ALL bad inputs (proven safe).
+    SAT = dangerous value possible despite gates (with witness).
+    """
+    key = f"{address_or_name}_{sink_function}_{sink_argument_index}_bounds"
+    return _ida_tool("prove_bounds_sufficient", binary_id, key=key,
+                     address_or_name=address_or_name,
+                     sink_function=sink_function,
+                     sink_argument_index=sink_argument_index)
+
+
+@mcp.tool()
 def prove_predicate_opaque(binary_id: str, address_or_name: str, condition_address: str) -> dict:
     """Prove whether a branch condition is opaque (always true/false)."""
     key = f"{address_or_name}_opaque"
