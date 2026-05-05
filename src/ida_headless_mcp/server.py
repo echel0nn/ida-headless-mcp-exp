@@ -1136,6 +1136,12 @@ def detect_library_functions(binary_id: str) -> dict:
 
 
 @mcp.tool()
+def recover_class_hierarchy(binary_id: str) -> dict:
+    """Recover C++ class hierarchy from vtable cross-reference analysis."""
+    return _ida_tool("recover_class_hierarchy", binary_id)
+
+
+@mcp.tool()
 def detect_protocol_state_machine(binary_id: str, address_or_name: str) -> dict:
     """Detect network protocol state machine patterns in a function."""
     return _ida_tool("detect_protocol_state_machine", binary_id, key=address_or_name,
