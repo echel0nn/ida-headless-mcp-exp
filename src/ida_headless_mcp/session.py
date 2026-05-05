@@ -1254,6 +1254,64 @@ class IDABinarySessionManager:
         return result
 
     @requires(BinaryState.ACTIVE)
+    def detect_obfuscation(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
+        """Detect obfuscation techniques in a function."""
+        import ida_funcs
+        from .detection import detect_obfuscation
+        from .hexrays_analysis import decompile_cfunc, get_microcode_text
+
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        pseudocode = str(cfunc)
+        microcode = get_microcode_text(cfunc)
+        result = detect_obfuscation(microcode, pseudocode)
+        result["binary_id"] = binary_id
+        result["function"] = self._require(binary_id) and address_or_name
+        return result
+
+    @requires(BinaryState.INDEXED)
+    def detect_crypto_primitives(self, binary_id: str) -> dict[str, Any]:
+        """Detect known crypto constants and patterns in the binary."""
+        import ida_bytes
+        import ida_segment
+        from .detection import detect_crypto_primitives
+
+        # Gather data sections
+        data_bytes = []
+        seg = ida_segment.get_first_seg()
+        while seg:
+            if seg.perm & 2 == 0:  # not writable = likely .rdata/.rodata
+                size = min(seg.size(), 1024 * 1024)  # cap at 1MB
+                data = ida_bytes.get_bytes(seg.start_ea, size)
+                if data:
+                    data_bytes.append((seg.start_ea, data))
+            seg = ida_segment.get_next_seg(seg.start_ea)
+
+        # Function entries from index
+        idx = self._indices.get(binary_id)
+        func_entries = []
+        if idx:
+            func_entries = [
+                {"address": f"0x{e.address:x}", "name": e.name,
+                 "size_bytes": e.size_bytes, "cyclomatic_complexity": e.cyclomatic_complexity,
+                 "callees": list(e.callees)}
+                for e in idx.entries[:500]
+            ]
+
+        # String refs
+        strings = []
+        if idx:
+            for e in idx.entries:
+                strings.extend(e.string_refs)
+
+        result = detect_crypto_primitives(data_bytes, func_entries, list(set(strings)))
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.ACTIVE)
     def prove_overflow(
         self,
         binary_id: str,
