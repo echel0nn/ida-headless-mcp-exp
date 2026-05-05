@@ -92,15 +92,32 @@ class _Frontend:
             except (ValueError, OSError):
                 pass
 
-        # Build a human-readable message
-        messages = {
+        # Build a human-readable message from best available info
+        action_messages = {
             "alive": "Worker is running. Result will be cached shortly.",
             "spawned": "Worker just started. IDA bootstrap takes ~15s, then your request processes.",
             "respawned": "Worker was dead and has been respawned. IDA bootstrap takes ~15s.",
             "spawn_failed": "CRITICAL: Worker failed to start. Check logs/ directory.",
             "not_ready": "Binary is still being analyzed by idat64. Poll with poll_analysis().",
         }
-        result["message"] = messages.get(worker_action, "Queued. Worker status unknown.")
+        phase_messages = {
+            "bootstrapping_idalib": "Worker is bootstrapping IDA (~10s).",
+            "loading_database": "Worker is loading the .i64 database.",
+            "building_index": "Worker is building function index.",
+            "idle": "Worker is idle, processing queue now.",
+            "ready": "Worker just started, processing queue now.",
+        }
+        phase = result.get("worker_phase", "")
+        if worker_action and worker_action in action_messages:
+            result["message"] = action_messages[worker_action]
+        elif phase and phase in phase_messages:
+            result["message"] = phase_messages[phase]
+        elif phase and phase.startswith("processing"):
+            result["message"] = f"Worker is {phase}. Your request is queued."
+        elif result.get("worker_pid"):
+            result["message"] = "Worker is running. Your request is queued."
+        else:
+            result["message"] = "No worker detected. Request queued but may not process."
 
         return result
 
