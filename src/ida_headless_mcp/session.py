@@ -568,7 +568,7 @@ class IDABinarySessionManager:
             limit=limit,
         )
         decompiled = [
-            self.decompile(binary_id, item["address"], max_lines=max_lines)
+            self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
             for item in result["functions"]
         ]
         payload = {
@@ -654,7 +654,7 @@ class IDABinarySessionManager:
                         argument_index=0,
                         limit=3,
                     )
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
                     if sink["returned"] > 0 and sink["matches"]:
                         first = sink["matches"][0]
                         arg_preview = first["args_preview"][0] if first["arg_count"] > 0 else "<arg>"
@@ -681,7 +681,7 @@ class IDABinarySessionManager:
                         argument_index=0,
                         limit=3,
                     )
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
                     if sink["returned"] > 0 and sink["matches"]:
                         first = sink["matches"][0]
                         arg_preview = first["args_preview"][0] if first["arg_count"] > 0 else "<arg>"
@@ -716,7 +716,7 @@ class IDABinarySessionManager:
                         argument_index=2,
                         limit=1,
                     )
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
                     pseudo = decomp["pseudocode"]
                     pseudo_lower = pseudo.lower()
                     sink_line_index = next(
@@ -758,7 +758,7 @@ class IDABinarySessionManager:
                         operand_type_is="signed",
                         limit=3,
                     )
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
                     pseudo_lower = decomp["pseudocode"].lower()
                     has_validation = any(
                         t in pseudo_lower for t in ("validate", "bounds", "check", "maximum", "max_", ">= 0", "< 0")
@@ -787,7 +787,7 @@ class IDABinarySessionManager:
                         second_functions=check_then_use_second,
                         limit=3,
                     )
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
                     if seq["pairs_found"] > 0:
                         pair = seq["pairs"][0]
                         match_detail = (
@@ -812,7 +812,7 @@ class IDABinarySessionManager:
                         shared_argument_index=0,
                         limit=3,
                     )
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
                     if seq["pairs_found"] > 0:
                         pair = seq["pairs"][0]
                         match_detail = (
@@ -837,7 +837,7 @@ class IDABinarySessionManager:
                         second_functions=use_sinks,
                         limit=3,
                     )
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
                     if seq["pairs_found"] > 0:
                         pair = seq["pairs"][0]
                         match_detail = (
@@ -860,7 +860,7 @@ class IDABinarySessionManager:
                         target_functions=alloc_like,
                         limit=3,
                     )
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
                     if unchecked["returned"] > 0:
                         first = unchecked["matches"][0]
                         match_detail = (
@@ -886,7 +886,7 @@ class IDABinarySessionManager:
                         contains_operation="mul",
                         limit=3,
                     )
-                    decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                    decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
                     if sink["returned"] > 0:
                         first = sink["matches"][0]
                         mul_expr = first["args_preview"][0] if first["arg_count"] > 0 else "<expr>"
@@ -909,7 +909,7 @@ class IDABinarySessionManager:
             if match_detail is None:
                 continue
             if decomp is None:
-                decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+                decomp = self._decompile_sync(binary_id, item["address"], max_lines=max_lines)
 
             # Verification enrichment: assess exploitability
             verification = self._verify_pattern_hit(

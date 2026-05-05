@@ -22,6 +22,41 @@ __all__: list[str] = []
 
 QUEUE_FILENAME = "request_queue.jsonl"
 POLL_INTERVAL = 0.3
+HEARTBEAT_INTERVAL = 2.0  # seconds between heartbeat writes
+
+
+
+def _write_heartbeat(sha_dir: Path, status: str, current_request: str = "") -> None:
+    """Write worker heartbeat — proves liveness to the server."""
+    hb = {
+        "pid": __import__("os").getpid(),
+        "timestamp": time.time(),
+        "status": status,
+        "current_request": current_request,
+    }
+    try:
+        (sha_dir / "worker_heartbeat.json").write_text(
+            json.dumps(hb, separators=(',', ':')), encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _write_error(sha_dir: Path, req_type: str, error: str, detail: str = "") -> None:
+    """Persist a request processing error so the server can report it."""
+    err = {
+        "timestamp": time.time(),
+        "type": req_type,
+        "error": error,
+        "detail": detail[:500],
+    }
+    err_dir = sha_dir / "errors"
+    err_dir.mkdir(parents=True, exist_ok=True)
+    err_file = err_dir / f"{req_type}_{int(time.time())}.json"
+    try:
+        err_file.write_text(json.dumps(err, separators=(',', ':')), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
@@ -107,21 +142,33 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
 
     gen = Generation(sha_dir)
     last_activity = time.monotonic()
+    last_heartbeat = 0.0
+
+    _write_heartbeat(sha_dir, "ready")
 
     while True:
         if time.monotonic() - last_activity > idle_timeout:
+            _write_heartbeat(sha_dir, "exiting_idle")
             break
+
+        # Heartbeat
+        now = time.monotonic()
+        if now - last_heartbeat > HEARTBEAT_INTERVAL:
+            _write_heartbeat(sha_dir, "idle" if not False else "processing")
+            last_heartbeat = now
 
         processed = False
         processed |= _consume_queue(
             write_queue_path,
             lambda req: _handle_mutation(req, sha_dir, gen, write_results_dir, decompile_dir),
+            sha_dir,
         )
         processed |= _consume_queue(
             queue_path,
             lambda req: _dispatch_request(
                 req, sha_dir, decompile_dir, patterns_dir, results_dir, gen,
             ),
+            sha_dir,
         )
         if processed:
             last_activity = time.monotonic()
@@ -129,8 +176,12 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
             time.sleep(POLL_INTERVAL)
 
 
-def _consume_queue(queue_path: Path, handler) -> bool:
-    """Read and consume a JSONL queue, calling handler per entry."""
+def _consume_queue(queue_path: Path, handler, sha_dir: Path) -> bool:
+    """Read and consume a JSONL queue, calling handler per entry.
+
+    On error: persists the error to sha_dir/errors/ so the server can report it.
+    Never silently swallows exceptions.
+    """
     if not queue_path.exists():
         return False
     try:
@@ -142,10 +193,18 @@ def _consume_queue(queue_path: Path, handler) -> bool:
         return False
     for line in raw.splitlines():
         try:
-            handler(json.loads(line))
+            req = json.loads(line)
+            req_type = req.get("type", "unknown")
+            _write_heartbeat(sha_dir, "processing", req_type)
+            handler(req)
         except Exception as exc:
-            import sys
-            print(f"[binary_worker] queue handler error: {exc}", file=sys.stderr, flush=True)
+            req_type = "unknown"
+            try:
+                req_type = json.loads(line).get("type", "unknown")
+            except (ValueError, AttributeError):
+                pass
+            _write_error(sha_dir, req_type, str(exc), __import__('traceback').format_exc())
+            print(f"[binary_worker] {req_type} FAILED: {exc}", file=sys.stderr, flush=True)
     return True
 
 
@@ -212,14 +271,25 @@ def _handle_search_pattern(req, sha_dir, patterns_dir, current_gen):
     if cache_file.exists():
         return
 
-
     mgr = _build_session_stub(sha_dir)
     try:
         result = mgr.search_pattern(mgr._active_binary_id, pattern_type, limit=50)
         result["generation"] = current_gen
         cache_file.write_text(json.dumps(result, separators=(',', ':')), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as exc:
+        # Persist error so server can report it instead of silent failure
+        _write_error(sha_dir, f"search_pattern_{pattern_type}", str(exc),
+                     __import__('traceback').format_exc())
+        # Write a partial result so the server doesn't keep re-queuing
+        error_result = {
+            "binary_id": req.get("binary_id", ""),
+            "pattern_type": pattern_type,
+            "count": 0,
+            "matches": [],
+            "error": str(exc),
+            "generation": current_gen,
+        }
+        cache_file.write_text(json.dumps(error_result, separators=(',', ':')), encoding="utf-8")
 
 
 def _handle_tool(req, sha_dir, results_dir, current_gen):
