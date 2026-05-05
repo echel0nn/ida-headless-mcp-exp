@@ -1105,6 +1105,37 @@ def recover_cfg(binary_id: str, address_or_name: str) -> dict:
 
 
 @mcp.tool()
+def resolve_api_hashes(binary_id: str) -> dict:
+    """Resolve hash-imported API names (CRC32, DJB2, ROR13, FNV-1a, SDBM).
+
+    Malware imports APIs by hash to evade static analysis. This tool
+    resolves hash values back to API names from a precomputed database.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Resolved API names with hash algorithm identified.
+    """
+    return _ida_tool("resolve_api_hashes", binary_id)
+
+
+@mcp.tool()
+def detect_library_functions(binary_id: str) -> dict:
+    """Aggregate library functions by detected library (OpenSSL, zlib, etc).
+
+    Groups FLIRT-identified library functions by name prefix patterns.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Libraries detected with function counts and names.
+    """
+    return _ida_tool("detect_library_functions", binary_id)
+
+
+@mcp.tool()
 def detect_protocol_state_machine(binary_id: str, address_or_name: str) -> dict:
     """Detect network protocol state machine patterns in a function."""
     return _ida_tool("detect_protocol_state_machine", binary_id, key=address_or_name,
