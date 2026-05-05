@@ -63,14 +63,46 @@ class _Frontend:
             raise KeyError(f"Unknown binary_id: {binary_id}")
         return rec["sha256"]
 
-    def _pending(self, binary_id: str, lc: Any) -> dict[str, Any]:
-        return {
+    def _pending(self, binary_id: str, lc: Any, worker_action: str = "") -> dict[str, Any]:
+        """Build an informative pending response with worker diagnostics."""
+        import time as _time
+
+        sha = self._sha(binary_id)
+        result: dict[str, Any] = {
             "binary_id": binary_id,
             "status": "pending",
             "state": lc.state.name if lc else "UNKNOWN",
-            "queue_depth": self.cache.queue_depth(self._sha(binary_id)),
-            "message": "Background worker is processing. Retry or poll with poll_analysis().",
+            "queue_depth": self.cache.queue_depth(sha),
         }
+
+        # What did ensure_worker do?
+        if worker_action:
+            result["worker_action"] = worker_action
+
+        # Read heartbeat for granular worker phase
+        hb_path = self.settings.cache_dir / sha / "worker_heartbeat.json"
+        if hb_path.exists():
+            try:
+                import json as _json
+                hb = _json.loads(hb_path.read_text(encoding="utf-8"))
+                age = int(_time.time() - hb.get("timestamp", 0))
+                result["worker_phase"] = hb.get("status", "unknown")
+                result["heartbeat_age_s"] = age
+                result["worker_pid"] = hb.get("pid")
+            except (ValueError, OSError):
+                pass
+
+        # Build a human-readable message
+        messages = {
+            "alive": "Worker is running. Result will be cached shortly.",
+            "spawned": "Worker just started. IDA bootstrap takes ~15s, then your request processes.",
+            "respawned": "Worker was dead and has been respawned. IDA bootstrap takes ~15s.",
+            "spawn_failed": "CRITICAL: Worker failed to start. Check logs/ directory.",
+            "not_ready": "Binary is still being analyzed by idat64. Poll with poll_analysis().",
+        }
+        result["message"] = messages.get(worker_action, "Queued. Worker status unknown.")
+
+        return result
 
     def _cached_or_pending(
         self,
@@ -83,7 +115,7 @@ class _Frontend:
         sha = self._sha(binary_id)
         lc = self.lifecycle.get(binary_id)
         if lc and lc.state < BinaryState.READY:
-            return self._pending(binary_id, lc)
+            return self._pending(binary_id, lc, "not_ready")
         cached = self.cache.get_result(sha, tool, key)
         if cached:
             cached["binary_id"] = binary_id
@@ -91,8 +123,8 @@ class _Frontend:
             return cached
         # Queue the request and ensure worker is alive to process it
         self.cache.queue_request(sha, tool, params or {})
-        self.lifecycle.ensure_worker(binary_id)
-        return self._pending(binary_id, lc)
+        worker_action = self.lifecycle.ensure_worker(binary_id)
+        return self._pending(binary_id, lc, worker_action)
 
 
 @lru_cache(maxsize=1)
@@ -250,7 +282,7 @@ def poll_analysis(binary_id: str) -> dict:
 def worker_status() -> dict:
     """Return status of all binary workers: heartbeat, queue depth, errors.
 
-    Reads directly from filesystem — no worker needed. Use to diagnose
+    Reads directly from filesystem \u2014 no worker needed. Use to diagnose
     why tools return 'pending' (worker dead, stuck, or still processing).
 
     Returns:
@@ -274,18 +306,21 @@ def worker_status() -> dict:
 
         # Heartbeat
         hb = d / "worker_heartbeat.json"
+        pid = None
+        hb_status = ""
+        hb_age = -1
         if hb.exists():
             try:
                 import json as _json
                 h = _json.loads(hb.read_text(encoding="utf-8"))
-                info["worker_pid"] = h.get("pid")
-                info["worker_status"] = h.get("status")
-                info["heartbeat_age_s"] = int(time.time() - h.get("timestamp", 0))
+                pid = h.get("pid")
+                hb_status = h.get("status", "")
+                hb_age = int(time.time() - h.get("timestamp", 0))
+                info["worker_pid"] = pid
+                info["heartbeat_age_s"] = hb_age
                 info["current_request"] = h.get("current_request", "")
             except (ValueError, OSError):
-                info["worker_status"] = "heartbeat_corrupt"
-        else:
-            info["worker_status"] = "no_heartbeat"
+                hb_status = "heartbeat_corrupt"
 
         # Queue depth
         q = d / "request_queue.jsonl"
@@ -294,6 +329,35 @@ def worker_status() -> dict:
             info["queue_depth"] = len(text.splitlines()) if text else 0
         else:
             info["queue_depth"] = 0
+
+        # Definitive liveness verdict
+        process_alive = False
+        if pid:
+            import os
+            try:
+                os.kill(pid, 0)
+                process_alive = True
+            except OSError:
+                pass
+
+        # Compute definitive worker_status
+        if process_alive and hb_age >= 0 and hb_age < 30:
+            info["worker_status"] = hb_status or "alive"
+        elif process_alive and hb_age >= 30:
+            info["worker_status"] = "alive_stale_heartbeat"
+        elif not process_alive and hb_status.startswith("exiting"):
+            info["worker_status"] = "exited"
+        elif not process_alive and hb_age >= 0:
+            info["worker_status"] = "dead"
+        elif not hb.exists():
+            info["worker_status"] = "no_worker"
+        else:
+            info["worker_status"] = "unknown"
+        info["process_alive"] = process_alive
+
+        # Action needed?
+        if not process_alive and info["queue_depth"] > 0:
+            info["action_needed"] = "respawn"
 
         # Recent errors
         errors_dir = d / "errors"
@@ -313,14 +377,14 @@ def worker_status() -> dict:
         else:
             info["recent_errors"] = []
 
-        # Check process liveness
-        if info.get("worker_pid"):
-            import os
+        # Worker stderr log (last 3 lines)
+        log_file = d / "logs" / "worker_stderr.log"
+        if log_file.exists():
             try:
-                os.kill(info["worker_pid"], 0)
-                info["process_alive"] = True
+                lines = log_file.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+                info["recent_log"] = lines[-3:] if lines else []
             except OSError:
-                info["process_alive"] = False
+                pass
 
         workers.append(info)
 
@@ -355,9 +419,9 @@ def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dic
         cached["status"] = "ready"
         return cached
     fe.cache.queue_decompile(sha, address_or_name)
-    fe.lifecycle.ensure_worker(binary_id)
+    worker_action = fe.lifecycle.ensure_worker(binary_id)
     lc = fe.lifecycle.get(binary_id)
-    return fe._pending(binary_id, lc)
+    return fe._pending(binary_id, lc, worker_action)
 
 
 # ======================================================================
@@ -451,9 +515,9 @@ def search_pattern(binary_id: str, pattern_type: str, name_pattern: str = "", li
         cached["status"] = "ready"
         return cached
     fe.cache.queue_pattern(sha, pattern_type)
-    fe.lifecycle.ensure_worker(binary_id)
+    worker_action = fe.lifecycle.ensure_worker(binary_id)
     lc = fe.lifecycle.get(binary_id)
-    return fe._pending(binary_id, lc)
+    return fe._pending(binary_id, lc, worker_action)
 
 
 @mcp.tool()
@@ -475,9 +539,9 @@ def binary_survey(binary_id: str, max_hotspots: int = 10) -> dict:
         cached["status"] = "ready"
         return cached
     fe.cache.queue_request(sha, "binary_survey", {"max_hotspots": max_hotspots})
-    fe.lifecycle.ensure_worker(binary_id)
+    worker_action = fe.lifecycle.ensure_worker(binary_id)
     lc = fe.lifecycle.get(binary_id)
-    return fe._pending(binary_id, lc)
+    return fe._pending(binary_id, lc, worker_action)
 
 
 @mcp.tool()

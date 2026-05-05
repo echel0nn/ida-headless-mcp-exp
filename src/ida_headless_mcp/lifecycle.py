@@ -199,35 +199,93 @@ class LifecycleManager:
             lc.error = f"Failed to start idat64: {exc}"
             self._save(lc)
 
-    def ensure_worker(self, binary_id: str) -> None:
+    def ensure_worker(self, binary_id: str) -> str:
         """Ensure a worker is running for the given binary.
 
-        Called by the server before queuing a request so that
-        queued work actually gets processed.
+        Returns a status string describing what happened:
+        - 'alive': worker was already running
+        - 'spawned': new worker started
+        - 'respawned': dead worker replaced with new one
+        - 'not_ready': binary not yet analyzed (.i64 missing)
+        - 'spawn_failed': subprocess failed to start (check logs)
         """
         lc = self._lifecycles.get(binary_id)
-        if lc and lc.state >= BinaryState.READY:
-            self._start_binary_worker(lc)
+        if not lc or lc.state < BinaryState.READY:
+            return "not_ready"
+        return self._start_binary_worker(lc)
 
-    def _start_binary_worker(self, lc: BinaryLifecycle) -> None:
+    def _worker_is_alive(self, lc: BinaryLifecycle) -> bool:
+        """Definitive liveness check for a binary's worker.
+
+        Checks in order:
+        1. Tracked subprocess object (most reliable)
+        2. Heartbeat file with PID validation (for workers from prior server)
+        """
+        # Check tracked subprocess
+        existing = self._worker_procs.get(lc.sha256)
+        if existing is not None:
+            if existing.poll() is None:
+                return True  # Definitely alive
+            # Dead — clean up stale entry
+            del self._worker_procs[lc.sha256]
+            self._worker_activity.pop(lc.sha256, None)
+            return False
+
+        # No tracked proc — check heartbeat (for workers surviving server restart)
+        hb_path = self.cache_dir / lc.sha256 / "worker_heartbeat.json"
+        if not hb_path.exists():
+            return False
+        try:
+            hb = json.loads(hb_path.read_text(encoding="utf-8"))
+            age = time.time() - hb.get("timestamp", 0)
+            pid = hb.get("pid", 0)
+            status = hb.get("status", "")
+
+            # If heartbeat says exiting, it's dead
+            if status.startswith("exiting"):
+                hb_path.unlink(missing_ok=True)
+                return False
+
+            # Stale heartbeat (>30s) means worker is dead or hung
+            if age > 30:
+                # Double-check with OS-level PID probe
+                if pid and _pid_alive(pid):
+                    return True  # Worker alive, just missed heartbeat
+                hb_path.unlink(missing_ok=True)
+                return False
+
+            # Fresh heartbeat — verify PID is real
+            if pid and _pid_alive(pid):
+                return True
+            hb_path.unlink(missing_ok=True)
+            return False
+        except (json.JSONDecodeError, OSError, KeyError):
+            hb_path.unlink(missing_ok=True)
+            return False
+
+    def _start_binary_worker(self, lc: BinaryLifecycle) -> str:
         """Spawn a binary_worker process for this binary.
 
-        Enforces max_workers limit. If at capacity, evicts the
-        least-recently-active worker to make room.
+        Returns 'alive', 'spawned', 'respawned', or 'spawn_failed'.
+        Enforces max_workers limit via LRU eviction.
         """
-        # Already running? Only trust our own tracked processes.
-        existing = self._worker_procs.get(lc.sha256)
-        if existing is not None and existing.poll() is None:
+        was_dead = not self._worker_is_alive(lc)
+        if not was_dead:
             self._worker_activity[lc.sha256] = time.monotonic()
-            return
+            return "alive"
 
         # Enforce max_workers — evict LRU if at capacity
         alive = {
             sha: proc for sha, proc in self._worker_procs.items()
             if proc.poll() is None
         }
+        # Clean up dead entries
+        dead = [sha for sha, proc in self._worker_procs.items() if proc.poll() is not None]
+        for sha in dead:
+            del self._worker_procs[sha]
+            self._worker_activity.pop(sha, None)
+
         if len(alive) >= self.max_workers:
-            # Find least recently active worker
             lru_sha = min(
                 alive.keys(),
                 key=lambda s: self._worker_activity.get(s, 0),
@@ -240,7 +298,6 @@ class LifecycleManager:
                 lru_proc.kill()
             del self._worker_procs[lru_sha]
             self._worker_activity.pop(lru_sha, None)
-            # Downgrade evicted binary's state back to READY
             for evicted in self._lifecycles.values():
                 if evicted.sha256 == lru_sha:
                     evicted.state = BinaryState.READY
@@ -248,8 +305,12 @@ class LifecycleManager:
                     self._save(evicted)
                     break
 
-        # Spawn new worker
+        # Spawn new worker with stderr logged
+        log_dir = self.cache_dir / lc.sha256 / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "worker_stderr.log"
         try:
+            stderr_fh = open(log_file, "a", encoding="utf-8")
             proc = subprocess.Popen(
                 [
                     sys.executable, "-m", "ida_headless_mcp.binary_worker",
@@ -257,14 +318,19 @@ class LifecycleManager:
                     "--cache-dir", str(self.cache_dir),
                 ],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_fh,
             )
             self._worker_procs[lc.sha256] = proc
             self._worker_activity[lc.sha256] = time.monotonic()
             lc.decompile_worker_pid = proc.pid
             self._save(lc)
-        except OSError:
-            pass
+            return "respawned" if was_dead else "spawned"
+        except OSError as exc:
+            import traceback
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"\n[lifecycle] Failed to spawn worker: {exc}\n")
+                f.write(traceback.format_exc())
+            return "spawn_failed"
 
     def check_workers(self) -> dict[str, str]:
         """Check worker health. Restart dead workers for READY+ binaries."""
