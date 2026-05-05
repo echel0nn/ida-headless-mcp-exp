@@ -92,6 +92,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     binary_path = exe_files[0]
 
     # Bootstrap IDA
+    _write_heartbeat(sha_dir, "bootstrapping_idalib")
     src_dir = Path(__file__).resolve().parent.parent
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
@@ -117,6 +118,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
                 pass
 
     # Open database
+    _write_heartbeat(sha_dir, "loading_database")
     rc = ida_mod.open_database(str(binary_path), True)
     if rc != 0:
         _update_state(sha_dir, error=f"open_database failed with code {rc}")
@@ -135,6 +137,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     # Build index if not cached
     index_path = sha_dir / "index.json"
     if not index_path.exists():
+        _write_heartbeat(sha_dir, "building_index")
         from ida_headless_mcp.function_index import build_function_index
         index = build_function_index()
         index.save(index_path)
