@@ -1360,6 +1360,27 @@ class IDABinarySessionManager:
                 callees = entry.get("callees", [])
                 string_refs = entry.get("string_refs", [])
         result = detect_protocol_state_machine(pseudocode, callees, string_refs)
+
+        # Taint verification: does recv output actually flow to dispatch?
+        if result.get("recv_present") and result.get("has_command_dispatch"):
+            from .hexrays_analysis import trace_ctree_dataflow
+            # Find recv-like sinks and trace their output forward
+            recv_apis = ["recv", "recvfrom", "wsarecv", "winhttpreaddata", "internetreadfile"]
+            for api in recv_apis:
+                if api in {c.lower() for c in callees}:
+                    flow = trace_ctree_dataflow(
+                        cfunc, sink_function=api, sink_argument_index=1,
+                        source_contains=[], max_steps=10,
+                    )
+                    if flow.get("sink_found"):
+                        result["recv_to_dispatch_verified"] = True
+                        result["recv_trace"] = {
+                            "api": api,
+                            "buffer_expr": flow.get("sink_expression"),
+                        }
+                        break
+            else:
+                result["recv_to_dispatch_verified"] = False
         result["binary_id"] = binary_id
         result["function"] = address_or_name
         return result
@@ -1429,7 +1450,7 @@ class IDABinarySessionManager:
         cfunc = decompile_cfunc(func)
         pseudocode = str(cfunc)
         microcode = get_microcode_text(cfunc)
-        result = detect_obfuscation(microcode, pseudocode)
+        result = detect_obfuscation(microcode, pseudocode, cfunc=cfunc)
         result["binary_id"] = binary_id
         result["function"] = self._require(binary_id) and address_or_name
         return result
