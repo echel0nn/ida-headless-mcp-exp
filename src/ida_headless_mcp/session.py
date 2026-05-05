@@ -1270,24 +1270,48 @@ class IDABinarySessionManager:
 
     @requires(BinaryState.INDEXED)
     def resolve_api_hashes(self, binary_id: str) -> dict:
-        """Resolve hash-imported API names in the binary."""
+        """Resolve hash-imported API names by scanning code for constants."""
+        import ida_funcs
+        import ida_ua
+        import idautils
+
         from .api_hashes import resolve_api_hashes
-        # Find constant values that look like hashes (32-bit values in code/data)
+
         hash_candidates: list[int] = []
         idx = self._indices.get(binary_id)
-        if idx:
-            for entry in idx.entries:
-                for sr in entry.string_refs:
-                    # Check if string ref is actually a hex constant
-                    if sr.startswith("0x") and len(sr) <= 10:
-                        try:
-                            hash_candidates.append(int(sr, 16))
-                        except ValueError:
-                            pass
-        # Also scan for push/mov of 32-bit constants in functions that call GetProcAddress
-        # (simplified: just try all 32-bit constants from string refs)
+        if not idx:
+            return {"binary_id": binary_id, "resolved_count": 0, "resolved": []}
+
+        # Find functions that call GetProcAddress or hash-resolver patterns
+        resolver_callers: set[int] = set()
+        for entry in idx.entries:
+            callees_lower = {c.lower() for c in entry.callees}
+            if callees_lower & {"getprocaddress", "ldrgetprocedureaddress"}:
+                resolver_callers.add(entry.address)
+
+        # Scan those functions for 32-bit immediate constants
+        for func_ea in resolver_callers:
+            func = ida_funcs.get_func(func_ea)
+            if func is None:
+                continue
+            for head in idautils.Heads(func.start_ea, func.end_ea):
+                insn = ida_ua.insn_t()
+                if ida_ua.decode_insn(insn, head) <= 0:
+                    continue
+                for op in insn.ops:
+                    if op.type == 0:  # o_void
+                        break
+                    # Immediate operand with 32-bit value in hash range
+                    if op.type == 5:  # o_imm
+                        val = op.value & 0xFFFFFFFF
+                        if 0x1000 < val < 0xFFFFFFFF:
+                            hash_candidates.append(val)
+
+        # Deduplicate
+        hash_candidates = sorted(set(hash_candidates))
         result = resolve_api_hashes(hash_candidates)
         result["binary_id"] = binary_id
+        result["functions_scanned"] = len(resolver_callers)
         return result
 
     @requires(BinaryState.INDEXED)
@@ -1338,69 +1362,71 @@ class IDABinarySessionManager:
 
     @requires(BinaryState.ACTIVE)
     def recover_class_hierarchy(self, binary_id: str) -> dict[str, Any]:
-        """Recover C++ class hierarchy via CTree vtable pointer detection.
+        """Recover C++ class hierarchy via .rdata vtable scan + xref analysis.
 
-        Algorithm (ported from HexRaysPyTools):
-        1. Find functions that write a constant pointer to this+0 (constructors)
-        2. The constant is a vtable address. Read vtable entries from .rdata.
-        3. If constructor calls another constructor first, that's the base class.
+        Algorithm:
+        1. Scan .rdata for vtable-shaped arrays (consecutive function pointers)
+        2. For each vtable, find xrefs TO it (constructors that install it)
+        3. Read vtable entries to get virtual method list
+        No mass decompilation — uses xrefs and ida_bytes only.
         """
         import ida_bytes
         import ida_funcs
-        import ida_hexrays
+        import ida_name
+        import ida_segment
+        import idautils
 
         from .recovery import recover_class_hierarchy
 
         vtables: list[dict] = []
         constructors: list[dict] = []
 
-        # Scan functions for vtable writes (store constant to this+0)
+        # Step 1: Scan .rdata/.rodata for vtable candidates
+        seg = ida_segment.get_first_seg()
+        while seg:
+            seg_name = ida_segment.get_segm_name(seg) or ""
+            if "rdata" in seg_name.lower() or "rodata" in seg_name.lower():
+                ea = seg.start_ea
+                while ea < seg.end_ea - 16:
+                    # Check for consecutive code pointers
+                    ptrs: list[str] = []
+                    cur = ea
+                    while cur < seg.end_ea:
+                        val = ida_bytes.get_qword(cur)
+                        if val == 0:
+                            break
+                        fn = ida_funcs.get_func(val)
+                        if fn is None:
+                            break
+                        ptrs.append(f"0x{val:x}")
+                        cur += 8
+                    if len(ptrs) >= 3:
+                        vtables.append({"address": f"0x{ea:x}", "entries": ptrs})
+                        # Find constructors via xrefs TO this vtable address
+                        for xref in idautils.XrefsTo(ea, 0):
+                            ctor_func = ida_funcs.get_func(xref.frm)
+                            if ctor_func:
+                                constructors.append({
+                                    "constructor": ida_name.get_ea_name(ctor_func.start_ea),
+                                    "vtable": f"0x{ea:x}",
+                                    "xref_from": f"0x{xref.frm:x}",
+                                })
+                        ea = cur
+                    else:
+                        ea += 8
+            seg = ida_segment.get_next_seg(seg.start_ea)
+
         idx = self._indices.get(binary_id)
-        if not idx:
-            return {"binary_id": binary_id, "classes_found": 0, "classes": []}
-
-        for entry in idx.entries[:1000]:  # limit scan
-            if entry.is_library or entry.is_thunk:
-                continue
-            func = ida_funcs.get_func(entry.address)
-            if func is None or func.size() > 10000:
-                continue
-            try:
-                cfunc = ida_hexrays.decompile(func.start_ea)
-            except ida_hexrays.DecompilationFailure:
-                continue
-
-            # Look for *(_QWORD *)a1 = &vtable_addr pattern
-            pseudocode = str(cfunc)
-            if "*(_QWORD *)" not in pseudocode and "*(void **)" not in pseudocode:
-                continue
-            # Simple heuristic: function writes to first arg offset 0
-            import re
-            vtable_writes = re.findall(
-                r'\*\([^)]*\)\s*(?:a1|this)\s*=\s*&?(0x[0-9a-fA-F]+)',
-                pseudocode,
-            )
-            for vt in vtable_writes:
-                try:
-                    vt_addr = int(vt, 16)
-                except ValueError:
-                    continue
-                # Read vtable entries
-                entries = []
-                for i in range(50):  # max 50 methods
-                    ptr = ida_bytes.get_qword(vt_addr + i * 8)
-                    if ptr == 0:
-                        break
-                    fn = ida_funcs.get_func(ptr)
-                    if fn is None:
-                        break
-                    entries.append(f"0x{ptr:x}")
-                if len(entries) >= 2:
-                    vtables.append({"address": f"0x{vt_addr:x}", "entries": entries})
-                    constructors.append({
-                        "constructor": entry.name,
-                        "vtable": f"0x{vt_addr:x}",
-                    })
+        func_entries = []
+        if idx:
+            func_entries = [
+                {"address": f"0x{e.address:x}", "name": e.name}
+                for e in idx.entries
+            ]
+        result = recover_class_hierarchy(vtables[:100], func_entries)
+        result["binary_id"] = binary_id
+        result["constructors_found"] = constructors[:50]
+        return result
 
         func_entries = [
             {"address": f"0x{e.address:x}", "name": e.name}
@@ -1577,21 +1603,136 @@ class IDABinarySessionManager:
         sink_function: str,
         sink_argument_index: int,
     ) -> dict[str, Any]:
-        """Prove whether an integer overflow is feasible given validation gates."""
-        # First run assess_exploitability to get the data
+        """Prove overflow using CTree-to-SMT encoding + binbit solver."""
+        import ida_funcs
+        import ida_hexrays
+
+        from .ctree_to_smt import SMTContext, condition_to_smt
+        from .hexrays_analysis import (
+            decompile_cfunc,
+            query_ctree_calls,
+        )
+        from .smt_prover import binbit_available, solve_smtlib
+
+        # Get the assess result first (for verdict context)
         assess = self.assess_exploitability(
             binary_id, address_or_name, sink_function, sink_argument_index,
         )
         if not assess.get('sink_found'):
             return {**assess, 'proof': 'not_applicable'}
+        if not assess.get('has_multiplication'):
+            return {**assess, 'verdict': 'no_multiplication'}
 
-        from .proof import prove_overflow
-        result = prove_overflow(assess)
-        result['binary_id'] = binary_id
-        result['function'] = assess.get('function', '')
-        result['address'] = assess.get('address', '')
-        result['sink_expression'] = assess.get('sink_expression', '')
-        return result
+        # Decompile and find the sink + gates via CTree
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            return {**assess, 'verdict': 'decompile_failed'}
+        cfunc = decompile_cfunc(func)
+
+        # Find sink call in CTree
+        sink_info = query_ctree_calls(
+            cfunc, target_function=sink_function,
+            argument_index=sink_argument_index, limit=5,
+        )
+        if not sink_info.get('matches'):
+            # Fallback to text-based proof
+            from .proof import prove_overflow
+            result = prove_overflow(assess)
+            result['binary_id'] = binary_id
+            result['encoding'] = 'text_fallback'
+            return result
+
+        # Build SMT script from CTree
+        ctx = SMTContext()
+        script_lines = ['; CTree-encoded overflow proof']
+
+        # Encode validation gates from CTree if-conditions
+        gates_encoded = 0
+        class _GateFinder(ida_hexrays.ctree_visitor_t):
+            def __init__(self):
+                super().__init__(ida_hexrays.CV_FAST)
+                self.gate_smts: list[str] = []
+                self.sink_ea = int(sink_info['matches'][0]['address'], 16)
+
+            def visit_insn(self, insn):
+                if insn.op != ida_hexrays.cit_if:
+                    return 0
+                if insn.ea < self.sink_ea or insn.ea == 0:
+                    smt = condition_to_smt(insn.cif.expr, ctx)
+                    if smt:
+                        self.gate_smts.append(smt)
+                return 0
+
+        gf = _GateFinder()
+        gf.apply_to(cfunc.body, None)
+
+        # Add declarations
+        script_lines.append(ctx.get_declarations_smt())
+        script_lines.append('')
+
+        # Assert gate negations (at sink, gates did NOT fire)
+        for smt in gf.gate_smts:
+            script_lines.append(f'(assert (not {smt}))')
+            gates_encoded += 1
+
+        # Find multiplication operands from sink expression
+        match = sink_info['matches'][0]
+        if sink_argument_index < len(match.get('args_preview', [])):
+            # Add overflow predicate for all declared vars
+            vars_list = sorted(ctx.declarations.keys())
+            if len(vars_list) >= 2:
+                a, b = vars_list[0], vars_list[1]
+                w = ctx.declarations[a]
+                script_lines.append('')
+                script_lines.append(f'(assert (bvsgt {a} (_ bv0 {w})))')
+                script_lines.append(f'(assert (bvsgt {b} (_ bv0 {w})))')
+                script_lines.append(f'(declare-const _pf (_ BitVec {w*2}))')
+                script_lines.append(
+                    f'(assert (= _pf (bvmul '
+                    f'((_ sign_extend {w}) {a}) '
+                    f'((_ sign_extend {w}) {b}))))'
+                )
+                script_lines.append(
+                    f'(assert (not (= _pf '
+                    f'((_ sign_extend {w}) (bvmul {a} {b})))))'
+                )
+        script_lines.append('')
+        script_lines.append('(check-sat)')
+        witness_vars = ' '.join(sorted(ctx.declarations.keys()))
+        if witness_vars:
+            script_lines.append(f'(get-value ({witness_vars}))')
+
+        script = '\n'.join(script_lines)
+
+        if not binbit_available():
+            return {
+                **assess, 'verdict': 'solver_unavailable',
+                'gates_encoded': gates_encoded,
+                'encoding': 'ctree',
+            }
+
+        result = solve_smtlib(script)
+        verdict = 'inconclusive'
+        if result['result'] == 'sat':
+            verdict = 'proven_exploitable'
+        elif result['result'] == 'unsat':
+            verdict = 'proven_defended'
+
+        return {
+            'binary_id': binary_id,
+            'function': assess.get('function', ''),
+            'address': assess.get('address', ''),
+            'sink_expression': assess.get('sink_expression', ''),
+            'verdict': verdict,
+            'feasible': result['result'] == 'sat',
+            'witness': result.get('model', {}),
+            'time_ms': result.get('time_ms', 0),
+            'gates_encoded': gates_encoded,
+            'encoding': 'ctree',
+            'source_type': assess.get('source_type', ''),
+            'script': script,
+        }
 
     @requires(BinaryState.ACTIVE)
     def assess_exploitability(
