@@ -186,6 +186,10 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
             p["binary_id"], p["address_or_name"], p["sink_address"],
             timeout_seconds=p.get("timeout_seconds", 60),
         ),
+        "detect_obfuscation": lambda p: mgr.detect_obfuscation(
+            p["binary_id"], p["address_or_name"],
+        ),
+        "detect_crypto_primitives": lambda p: mgr.detect_crypto_primitives(p["binary_id"]),
         "prove_overflow": lambda p: mgr.prove_overflow(
             p["binary_id"], p["address_or_name"],
             sink_function=p["sink_function"],
