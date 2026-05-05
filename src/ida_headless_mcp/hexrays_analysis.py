@@ -1459,44 +1459,17 @@ def assess_exploitability(
     sink_expr = match["args_preview"][sink_argument_index]
     sink_addr = match["address"]
 
-    # Deep backward trace with arithmetic tracking
+    # Deep backward trace with arithmetic tracking and recursive resolution
     assignments = _collect_assignments(cfunc)
     arithmetic_ops: list[str] = []
-    source_type = "unknown"
-    current = _normalize_expr(sink_expr)
     chain: list[dict[str, str]] = []
-    seen: set[str] = set()
 
-    for _ in range(20):
-        if current in seen:
-            break
-        seen.add(current)
-        if _is_parameter(current):
-            source_type = "function_parameter"
-            break
-        if _is_struct_field_read(current):
-            source_type = "struct_field"
-            break
-        if _is_constant(current):
-            source_type = "constant"
-            break
-        if _contains_call(current):
-            source_type = "call_result"
-            break
-        found = None
-        for item in reversed(assignments):
-            if item["lhs_norm"] == current:
-                found = item
-                break
-        if found is None:
-            break
-        rhs = found["rhs"]
-        chain.append({"lhs": found["lhs"], "rhs": rhs, "address": found["address"]})
-        if any(op in rhs for op in ("*", "<<", "+", "-", "/", "%")):
-            arithmetic_ops.append(rhs)
-        current = found["rhs_norm"]
+    source_type, current = _trace_to_source(
+        _normalize_expr(sink_expr), assignments, chain, arithmetic_ops, set(), 20,
+    )
 
-    if source_type == "struct_field":
+    # Refine source classification
+    if source_type == "struct_field" or source_type == "indexed_access":
         source_type = "file_header_field"
     elif source_type == "call_result":
         if any(f in current.lower() for f in ("fread", "readfile", "recv")):
@@ -1570,32 +1543,145 @@ def assess_exploitability(
     }
 
 
-def _is_parameter(expr: str) -> bool:
-    return bool(re.match(r"^a\d+$", expr))
+def _trace_to_source(
+    expr: str,
+    assignments: list[dict],
+    chain: list[dict],
+    arithmetic_ops: list[str],
+    seen: set[str],
+    max_depth: int,
+) -> tuple[str, str]:
+    """Recursively trace an expression to its source.
+
+    Returns (source_type, final_expression).
+    source_type is one of: function_parameter, indexed_access, struct_field,
+    constant, call_result, unknown.
+    """
+    if max_depth <= 0 or expr in seen:
+        return "unknown", expr
+    seen.add(expr)
+
+    # Direct classification
+    source = _classify_expr(expr)
+    if source != "unknown":
+        return source, expr
+
+    # Find assignment: expr = rhs
+    found = None
+    for item in reversed(assignments):
+        if item["lhs_norm"] == expr:
+            found = item
+            break
+    if found is None:
+        # Can't trace further — check if it's a compound expression
+        # with traceable sub-expressions (e.g., v10 * v21)
+        return _trace_compound(expr, assignments, chain, arithmetic_ops, seen, max_depth)
+
+    rhs = found["rhs"]
+    rhs_norm = found["rhs_norm"]
+    chain.append({"lhs": found["lhs"], "rhs": rhs, "address": found["address"]})
+
+    # Track arithmetic in the assignment
+    if any(op in rhs for op in ('*', '<<', '+', '-', '/', '%')):
+        arithmetic_ops.append(rhs)
+
+    # Classify the RHS directly
+    source = _classify_expr(rhs_norm)
+    if source != "unknown":
+        return source, rhs_norm
+
+    # Recurse on the RHS
+    return _trace_to_source(rhs_norm, assignments, chain, arithmetic_ops, seen, max_depth - 1)
 
 
-def _is_struct_field_read(expr: str) -> bool:
-    return ("*(" in expr or "->" in expr
-            or bool(re.search(r"\*\(_\w+\s*\*\)", expr))
-            or ("+" in expr and "*" in expr and "(" in expr))
+def _trace_compound(
+    expr: str,
+    assignments: list[dict],
+    chain: list[dict],
+    arithmetic_ops: list[str],
+    seen: set[str],
+    max_depth: int,
+) -> tuple[str, str]:
+    """Trace compound expressions like 'v10 * v21' by resolving sub-terms.
+
+    If either operand traces to an external source, the whole expression
+    is considered external (worst-case propagation).
+    """
+    # Extract variable-like sub-terms from the expression
+    sub_vars = re.findall(r'\b(v\d+|a\d+|Size|[A-Z]\w+)\b', expr)
+    if not sub_vars:
+        return "unknown", expr
+
+    # Trace each sub-variable, take the most "external" source
+    priority = {
+        "function_parameter": 5,
+        "indexed_access": 4,
+        "struct_field": 4,
+        "call_result": 3,
+        "unknown": 1,
+        "constant": 0,
+    }
+    best_source = "unknown"
+    best_expr = expr
+
+    for var in sub_vars[:4]:  # limit fan-out
+        if var in seen:
+            continue
+        sub_source, sub_expr = _trace_to_source(
+            var, assignments, chain, arithmetic_ops, set(seen), max_depth - 1,
+        )
+        if priority.get(sub_source, 0) > priority.get(best_source, 0):
+            best_source = sub_source
+            best_expr = sub_expr
+
+    return best_source, best_expr
 
 
-def _is_constant(expr: str) -> bool:
-    e = expr.strip().rstrip("uUlL")
-    if e.startswith("0x") or e.startswith("-0x"):
-        return True
+def _classify_expr(expr: str) -> str:
+    """Classify a single expression into a source type.
+
+    Recognizes:
+    - a1, a2 ... → function_parameter
+    - v9[1], ptr[offset] → indexed_access (struct/header field)
+    - *(ptr + N), *(type*)expr → struct_field
+    - 0x1234, 42LL → constant
+    - func() → call_result
+    """
+    e = expr.strip()
+
+    # Function parameter
+    if re.match(r'^a\d+$', e):
+        return "function_parameter"
+
+    # Array/indexed access: v9[1], a2[3], *(ptr)[N]
+    if re.search(r'\w+\[\d+\]', e):
+        return "indexed_access"
+
+    # Struct field dereference
+    if ('*(' in e or '->' in e
+            or bool(re.search(r'\*\(_\w+\s*\*\)', e))
+            or bool(re.search(r'\*\(.*\+\s*\d+\)', e))):
+        return "struct_field"
+
+    # Constant
+    c = e.rstrip('uUlL').strip()
+    if c.startswith('0x') or c.startswith('-0x'):
+        return "constant"
     try:
-        int(e)
-        return True
+        int(c)
+        return "constant"
     except ValueError:
-        return False
+        pass
 
+    # Function call
+    if re.search(r'\w+\s*\(', e):
+        return "call_result"
 
-def _contains_call(expr: str) -> bool:
-    return bool(re.search(r"\w+\s*\(", expr))
+    return "unknown"
 
 
 def _classify_gate(condition: str, variable: str) -> str:
+    """Classify an if-condition as a validation gate type."""
     cond = condition.lower()
     if "/" in cond and "*" in cond:
         return "overflow_check"
