@@ -985,6 +985,30 @@ def constrained_reachability(
 
 
 @mcp.tool()
+def prove_predicate_opaque(binary_id: str, address_or_name: str, condition_address: str) -> dict:
+    """Prove whether a branch condition is opaque (always true/false)."""
+    key = f"{address_or_name}_opaque"
+    return _ida_tool("prove_predicate_opaque", binary_id, key=key,
+                     address_or_name=address_or_name, condition_address=condition_address)
+
+
+@mcp.tool()
+def prove_equivalence(binary_id: str, expr_a: str, expr_b: str, address_or_name: str) -> dict:
+    """Prove two expressions equivalent for all inputs via SMT."""
+    key = f"{address_or_name}_equiv"
+    return _ida_tool("prove_equivalence", binary_id, key=key,
+                     address_or_name=address_or_name, expr_a=expr_a, expr_b=expr_b)
+
+
+@mcp.tool()
+def simplify_expression(binary_id: str, address_or_name: str, expression: str) -> dict:
+    """Simplify an obfuscated expression by proving equivalence to simpler forms."""
+    key = f"{address_or_name}_simplify"
+    return _ida_tool("simplify_expression", binary_id, key=key,
+                     address_or_name=address_or_name, expression=expression)
+
+
+@mcp.tool()
 def detect_obfuscation(binary_id: str, address_or_name: str) -> dict:
     """Detect obfuscation techniques in a function.
 
