@@ -246,6 +246,87 @@ def poll_analysis(binary_id: str) -> dict:
     }
 
 
+@mcp.tool()
+def worker_status() -> dict:
+    """Return status of all binary workers: heartbeat, queue depth, errors.
+
+    Reads directly from filesystem — no worker needed. Use to diagnose
+    why tools return 'pending' (worker dead, stuck, or still processing).
+
+    Returns:
+        Per-binary worker status with heartbeat age, queue depth,
+        recent errors, and process liveness.
+    """
+    import time
+
+    fe = _fe()
+    workers: list[dict] = []
+    cache_dir = fe.settings.cache_dir
+    if not cache_dir.exists():
+        return {"workers": [], "total": 0}
+
+    for d in sorted(cache_dir.iterdir()):
+        if not d.is_dir() or len(d.name) != 64:
+            continue
+        sha = d.name
+        binary_id = f"b_{sha[:12]}"
+        info: dict = {"binary_id": binary_id, "sha256_short": sha[:12]}
+
+        # Heartbeat
+        hb = d / "worker_heartbeat.json"
+        if hb.exists():
+            try:
+                import json as _json
+                h = _json.loads(hb.read_text(encoding="utf-8"))
+                info["worker_pid"] = h.get("pid")
+                info["worker_status"] = h.get("status")
+                info["heartbeat_age_s"] = int(time.time() - h.get("timestamp", 0))
+                info["current_request"] = h.get("current_request", "")
+            except (ValueError, OSError):
+                info["worker_status"] = "heartbeat_corrupt"
+        else:
+            info["worker_status"] = "no_heartbeat"
+
+        # Queue depth
+        q = d / "request_queue.jsonl"
+        if q.exists():
+            text = q.read_text(encoding="utf-8").strip()
+            info["queue_depth"] = len(text.splitlines()) if text else 0
+        else:
+            info["queue_depth"] = 0
+
+        # Recent errors
+        errors_dir = d / "errors"
+        if errors_dir.exists():
+            err_files = sorted(errors_dir.glob("*.json"))[-3:]
+            info["recent_errors"] = []
+            for ef in err_files:
+                try:
+                    import json as _json
+                    ed = _json.loads(ef.read_text(encoding="utf-8"))
+                    info["recent_errors"].append({
+                        "type": ed.get("type", ""),
+                        "error": ed.get("error", "")[:100],
+                    })
+                except (ValueError, OSError):
+                    pass
+        else:
+            info["recent_errors"] = []
+
+        # Check process liveness
+        if info.get("worker_pid"):
+            import os
+            try:
+                os.kill(info["worker_pid"], 0)
+                info["process_alive"] = True
+            except OSError:
+                info["process_alive"] = False
+
+        workers.append(info)
+
+    return {"workers": workers, "total": len(workers)}
+
+
 # ======================================================================
 # TOOLS — decompile (cache or pending)
 # ======================================================================
