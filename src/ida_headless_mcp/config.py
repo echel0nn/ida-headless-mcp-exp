@@ -30,7 +30,7 @@ class Settings:
     cache_dir: Path
     max_binary_size_mb: int = 200
     idle_timeout_s: int = 900
-    max_concurrent_ida: int = 2
+    max_concurrent_ida: int = 10
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -87,7 +87,7 @@ def load_settings() -> Settings:
         cache_dir=cache_dir.resolve(),
         max_binary_size_mb=_env_int("IDA_HEADLESS_MCP_MAX_BINARY_SIZE_MB", 200),
         idle_timeout_s=_env_int("IDA_HEADLESS_MCP_IDLE_TIMEOUT_S", 900),
-        max_concurrent_ida=_env_int("IDA_HEADLESS_MCP_MAX_CONCURRENT_IDA", 2),
+        max_concurrent_ida=_env_int("IDA_HEADLESS_MCP_MAX_CONCURRENT_IDA", 10),
     )
     settings.project_dir.mkdir(parents=True, exist_ok=True)
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
