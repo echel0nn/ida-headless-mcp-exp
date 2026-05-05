@@ -48,6 +48,16 @@ class CacheReader:
                     result.append(lc)
         return result
 
+    def load_index(self, sha256: str) -> list[dict[str, Any]] | None:
+        """Load cached function index for a binary."""
+        path = self.cache_dir / sha256 / "index.json"
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+
     # ------------------------------------------------------------------
     # Decompile cache
     # ------------------------------------------------------------------
