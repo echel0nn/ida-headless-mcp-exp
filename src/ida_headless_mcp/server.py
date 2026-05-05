@@ -915,6 +915,76 @@ def value_ranges(binary_id: str, address_or_name: str) -> dict:
 
 
 @mcp.tool()
+def interprocedural_taint(
+    binary_id: str,
+    sink_function: str,
+    sink_argument_index: int,
+    source_functions: list[str] | None = None,
+    max_depth: int = 5,
+) -> dict:
+    """Trace data flow from a sink argument backward across function boundaries.
+
+    Follows data through call chains: if the sink's argument came from a
+    caller's parameter, recurses up the call graph until hitting a source.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        sink_function: Dangerous sink to trace from (e.g., 'system', 'memcpy').
+        sink_argument_index: Which argument of the sink to trace (0-based).
+        source_functions: Stop when reaching one of these (e.g., ['recv', 'ReadFile']).
+        max_depth: Maximum call-chain hops to follow.
+
+    Returns:
+        Taint chains showing how data flows from source to sink across functions.
+    """
+    key = f"{sink_function}_{sink_argument_index}"
+    return _ida_tool(
+        "interprocedural_taint",
+        binary_id,
+        key=key,
+        sink_function=sink_function,
+        sink_argument_index=sink_argument_index,
+        source_functions=source_functions,
+        max_depth=max_depth,
+    )
+
+
+@mcp.tool()
+def constrained_reachability(
+    binary_id: str,
+    address_or_name: str,
+    sink_address: str,
+    timeout_seconds: int = 60,
+) -> dict:
+    """Prove path reachability using angr seeded with Hex-Rays value-range constraints.
+
+    Combines IDA's IR-level value-range analysis with angr symbolic execution.
+    Hex-Rays constraints (e.g., 'rax != 0', 'rbx in [0,3]') prune impossible
+    paths early, reducing state explosion. Known library functions are hooked
+    with angr summaries.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function entry address (exploration start).
+        sink_address: Target address to prove reachable.
+        timeout_seconds: Maximum symbolic execution time.
+
+    Returns:
+        Feasibility verdict with steps, elapsed time, constraints applied,
+        and hooks used.
+    """
+    key = f"{address_or_name}_{sink_address}"
+    return _ida_tool(
+        "constrained_reachability",
+        binary_id,
+        key=key,
+        address_or_name=address_or_name,
+        sink_address=sink_address,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+@mcp.tool()
 def classify_behavior(binary_id: str) -> dict:
     """Map imported APIs to ATT&CK-aligned behavioral categories.
 
