@@ -1254,6 +1254,30 @@ class IDABinarySessionManager:
         return result
 
     @requires(BinaryState.ACTIVE)
+    def prove_overflow(
+        self,
+        binary_id: str,
+        address_or_name: str,
+        sink_function: str,
+        sink_argument_index: int,
+    ) -> dict[str, Any]:
+        """Prove whether an integer overflow is feasible given validation gates."""
+        # First run assess_exploitability to get the data
+        assess = self.assess_exploitability(
+            binary_id, address_or_name, sink_function, sink_argument_index,
+        )
+        if not assess.get('sink_found'):
+            return {**assess, 'proof': 'not_applicable'}
+
+        from .proof import prove_overflow
+        result = prove_overflow(assess)
+        result['binary_id'] = binary_id
+        result['function'] = assess.get('function', '')
+        result['address'] = assess.get('address', '')
+        result['sink_expression'] = assess.get('sink_expression', '')
+        return result
+
+    @requires(BinaryState.ACTIVE)
     def assess_exploitability(
         self,
         binary_id: str,

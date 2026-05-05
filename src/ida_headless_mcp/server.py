@@ -985,6 +985,43 @@ def constrained_reachability(
 
 
 @mcp.tool()
+def prove_overflow(
+    binary_id: str,
+    address_or_name: str,
+    sink_function: str,
+    sink_argument_index: int,
+) -> dict:
+    """Prove whether an integer overflow is feasible despite validation gates.
+
+    Runs assess_exploitability first, then encodes the overflow condition
+    and validation gates as a bitvector SMT formula. Solves with binbit
+    in milliseconds.
+
+    Returns proven_exploitable (with witness values that trigger the overflow),
+    proven_defended (UNSAT — gates prevent overflow for ALL inputs),
+    or inconclusive (solver timeout).
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function containing the sink.
+        sink_function: The dangerous callee (e.g., 'memmove').
+        sink_argument_index: Which argument to check (e.g., 2 for size).
+
+    Returns:
+        Proof result with feasibility, witness, and verdict.
+    """
+    key = f"{address_or_name}_{sink_function}_{sink_argument_index}_proof"
+    return _ida_tool(
+        "prove_overflow",
+        binary_id,
+        key=key,
+        address_or_name=address_or_name,
+        sink_function=sink_function,
+        sink_argument_index=sink_argument_index,
+    )
+
+
+@mcp.tool()
 def assess_exploitability(
     binary_id: str,
     address_or_name: str,
