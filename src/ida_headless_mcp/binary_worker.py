@@ -240,8 +240,8 @@ def _handle_tool(req, sha_dir, results_dir, current_gen):
     if "target" in params and "address_or_name" not in params:
         params["address_or_name"] = params.pop("target")
 
-    # Cache key from the normalized params
-    key = params.get("address_or_name", params.get("key", ""))
+    # Cache key: prefer explicit _cache_key from server, fallback to address_or_name
+    key = params.pop("_cache_key", "") or params.get("address_or_name", "")
     safe_key = key.replace("/", "_").replace("\\", "_").replace(":", "_")
     filename = f"{req_type}_{safe_key}.json" if safe_key else f"{req_type}.json"
     cache_file = results_dir / filename
