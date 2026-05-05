@@ -45,3 +45,5 @@ malware_files/
 evidence/
 .mcp.json
 poc/
+tools/
+tools/binbit-src/
