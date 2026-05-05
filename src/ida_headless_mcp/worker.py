@@ -186,6 +186,18 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
             p["binary_id"], p["address_or_name"], p["sink_address"],
             timeout_seconds=p.get("timeout_seconds", 60),
         ),
+        "recover_cfg": lambda p: mgr.recover_cfg(
+            p["binary_id"], p["address_or_name"],
+        ),
+        "recover_class_hierarchy": lambda p: mgr.recover_class_hierarchy(p["binary_id"]),
+        "detect_protocol_state_machine": lambda p: mgr.detect_protocol_state_machine(
+            p["binary_id"], p["address_or_name"],
+        ),
+        "prove_bounds_sufficient": lambda p: mgr.prove_bounds_sufficient(
+            p["binary_id"], p["address_or_name"],
+            sink_function=p["sink_function"],
+            sink_argument_index=p["sink_argument_index"],
+        ),
         "prove_predicate_opaque": lambda p: mgr.prove_predicate_opaque(
             p["binary_id"], p["address_or_name"], p.get("condition_address", ""),
         ),
