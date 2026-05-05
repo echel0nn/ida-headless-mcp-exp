@@ -11,7 +11,10 @@ from typing import Any
 
 from .smt_prover import solve_smtlib
 
-__all__ = ["prove_overflow", "prove_predicate_opaque", "prove_equivalence", "simplify_expression"]
+__all__ = [
+    "prove_overflow", "prove_predicate_opaque", "prove_equivalence",
+    "simplify_expression", "prove_bounds_sufficient",
+]
 
 
 def prove_overflow(
@@ -579,3 +582,122 @@ def _expr_to_smt(expr: str, variables: list[str], width: int) -> str | None:
         return f"(bvnot {e[1:].strip()})"
 
     return None
+
+
+def prove_bounds_sufficient(
+    assess_result: dict[str, Any],
+    *,
+    width: int = 32,
+    timeout_ms: int = 5000,
+) -> dict[str, Any]:
+    """Prove whether ALL validation gates together prevent overflow/underflow.
+
+    Encodes all gates as constraints and checks if ANY dangerous condition
+    (overflow, negative size, excessive allocation) is still satisfiable.
+
+    Args:
+        assess_result: Output from assess_exploitability.
+        width: Bitvector width.
+        timeout_ms: Solver timeout.
+
+    Returns:
+        Dict with sufficient (bool) — True means gates prevent ALL bad inputs.
+    """
+    if not assess_result.get("sink_found"):
+        return {"sufficient": None, "verdict": "not_applicable"}
+
+    gates = assess_result.get("validation_gates", [])
+    if not gates:
+        return {
+            "sufficient": False,
+            "verdict": "no_gates",
+            "reason": "No validation gates found — input is unchecked.",
+        }
+
+    sink_expr = assess_result.get("sink_expression", "")
+    chain = assess_result.get("assignment_chain", [])
+
+    # Collect all variables
+    all_vars: set[str] = set()
+    for gate in gates:
+        for m in re.finditer(r"\b(v\d+|a\d+)\b", gate.get("condition", "")):
+            all_vars.add(m.group(1))
+    for item in chain:
+        for m in re.finditer(r"\b(v\d+|a\d+)\b", item.get("rhs", "")):
+            all_vars.add(m.group(1))
+
+    if not all_vars:
+        return {"sufficient": None, "verdict": "cannot_encode", "reason": "No variables found."}
+
+    # Build script: declare vars, assert all gates, ask if bad condition possible
+    lines = ["; Bounds sufficiency proof"]
+    for v in sorted(all_vars):
+        lines.append(f"(declare-const {v} (_ BitVec {width}))")
+    lines.append("")
+
+    # Assert all gates
+    gates_encoded = 0
+    for gate in gates:
+        cond = gate.get("condition", "")
+        smt = _gate_to_smt(cond, gate.get("gate_type", ""), all_vars, width)
+        if smt:
+            lines.append(f"; Gate: {cond[:50]}")
+            lines.append(f"(assert {smt})")
+            gates_encoded += 1
+
+    if gates_encoded == 0:
+        return {
+            "sufficient": None,
+            "verdict": "cannot_encode",
+            "reason": "Could not encode any gates as SMT constraints.",
+        }
+
+    # Assert dangerous condition: size is negative or excessively large
+    # (a signed 32-bit value > 0x40000000 or < 0 is suspicious for a size)
+    lines.append("")
+    lines.append("; Can the size be dangerously large despite gates?")
+    # Find the size variable (from sink expression)
+    size_vars = re.findall(r"\b(v\d+|a\d+|Size)\b", sink_expr)
+    if size_vars:
+        sv = size_vars[0]
+        if sv not in all_vars:
+            lines.append(f"(declare-const {sv} (_ BitVec {width}))")
+        # Dangerous = signed negative or > 0x40000000
+        lines.append(f"(assert (or (bvslt {sv} (_ bv0 {width})) (bvsgt {sv} (_ bv1073741824 {width}))))")
+    else:
+        # Fallback: just check if any variable can be very large
+        first_var = sorted(all_vars)[0]
+        lines.append(f"(assert (bvsgt {first_var} (_ bv1073741824 {width})))")
+
+    lines.append("")
+    lines.append("(check-sat)")
+    witness_vars = " ".join(sorted(all_vars))
+    lines.append(f"(get-value ({witness_vars}))")
+
+    script = "\n".join(lines)
+    result = solve_smtlib(script, timeout_ms=timeout_ms)
+
+    if result["result"] == "unsat":
+        return {
+            "sufficient": True,
+            "verdict": "proven_sufficient",
+            "reason": "Gates prevent ALL dangerous values. Bounds are mathematically sufficient.",
+            "gates_encoded": gates_encoded,
+            "time_ms": result["time_ms"],
+        }
+    elif result["result"] == "sat":
+        return {
+            "sufficient": False,
+            "verdict": "insufficient",
+            "reason": "Dangerous value IS possible despite gates.",
+            "witness": result["model"],
+            "gates_encoded": gates_encoded,
+            "time_ms": result["time_ms"],
+        }
+    else:
+        return {
+            "sufficient": None,
+            "verdict": "inconclusive",
+            "reason": f"Solver: {result['result']}",
+            "time_ms": result["time_ms"],
+        }

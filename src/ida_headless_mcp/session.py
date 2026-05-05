@@ -1254,6 +1254,109 @@ class IDABinarySessionManager:
         return result
 
     @requires(BinaryState.ACTIVE)
+    def recover_cfg(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
+        """Recover true control flow from a flattened function."""
+        import ida_funcs
+        from .hexrays_analysis import decompile_cfunc, get_microcode_text
+        from .recovery import recover_cfg
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        result = recover_cfg(str(cfunc), get_microcode_text(cfunc))
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.INDEXED)
+    def recover_class_hierarchy(self, binary_id: str) -> dict[str, Any]:
+        """Recover C++ class hierarchy from vtable analysis."""
+        import ida_bytes
+        import ida_segment
+        from .recovery import recover_class_hierarchy
+        # Scan .rdata for vtable candidates (arrays of code pointers)
+        vtables: list[dict] = []
+        seg = ida_segment.get_first_seg()
+        while seg:
+            name = ida_segment.get_segm_name(seg) or ""
+            if "rdata" in name.lower() or "rodata" in name.lower():
+                # Scan for consecutive code pointers
+                ea = seg.start_ea
+                while ea < seg.end_ea - 8:
+                    ptrs = []
+                    cur = ea
+                    while cur < seg.end_ea:
+                        val = int.from_bytes(
+                            ida_bytes.get_bytes(cur, 8) or b'\x00' * 8, 'little'
+                        )
+                        if 0x140000000 <= val <= 0x17FFFFFFF:  # typical code range
+                            ptrs.append(f"0x{val:x}")
+                            cur += 8
+                        else:
+                            break
+                    if len(ptrs) >= 3:  # minimum 3 entries for a vtable
+                        vtables.append({"address": f"0x{ea:x}", "entries": ptrs})
+                        ea = cur
+                    else:
+                        ea += 8
+            seg = ida_segment.get_next_seg(seg.start_ea)
+        idx = self._indices.get(binary_id)
+        func_entries = []
+        if idx:
+            func_entries = [
+                {"address": f"0x{e.address:x}", "name": e.name}
+                for e in idx.entries
+            ]
+        result = recover_class_hierarchy(vtables[:100], func_entries)
+        result["binary_id"] = binary_id
+        return result
+
+    @requires(BinaryState.ACTIVE)
+    def detect_protocol_state_machine(
+        self, binary_id: str, address_or_name: str,
+    ) -> dict[str, Any]:
+        """Detect network protocol state machine patterns."""
+        import ida_funcs
+        from .hexrays_analysis import decompile_cfunc
+        from .recovery import detect_protocol_state_machine
+        ea = _resolve_address(address_or_name)
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            raise ValueError(f"No function at {address_or_name!r}")
+        cfunc = decompile_cfunc(func)
+        pseudocode = str(cfunc)
+        # Get callees from index
+        idx = self._indices.get(binary_id)
+        callees: list[str] = []
+        string_refs: list[str] = []
+        if idx:
+            entry = idx.lookup(address_or_name)
+            if entry:
+                callees = entry.get("callees", [])
+                string_refs = entry.get("string_refs", [])
+        result = detect_protocol_state_machine(pseudocode, callees, string_refs)
+        result["binary_id"] = binary_id
+        result["function"] = address_or_name
+        return result
+
+    @requires(BinaryState.ACTIVE)
+    def prove_bounds_sufficient(
+        self, binary_id: str, address_or_name: str,
+        sink_function: str, sink_argument_index: int,
+    ) -> dict[str, Any]:
+        """Prove whether validation gates are sufficient to prevent overflow."""
+        assess = self.assess_exploitability(
+            binary_id, address_or_name, sink_function, sink_argument_index,
+        )
+        if not assess.get("sink_found"):
+            return {**assess, "sufficient": None}
+        from .proof import prove_bounds_sufficient
+        result = prove_bounds_sufficient(assess)
+        result["binary_id"] = binary_id
+        result["function"] = assess.get("function", "")
+        return result
+
+    @requires(BinaryState.ACTIVE)
     def prove_predicate_opaque(self, binary_id: str, address_or_name: str, condition_address: str) -> dict[str, Any]:
         """Prove whether a branch condition is opaque."""
         import ida_funcs
