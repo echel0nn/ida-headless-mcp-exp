@@ -985,6 +985,40 @@ def constrained_reachability(
 
 
 @mcp.tool()
+def detect_obfuscation(binary_id: str, address_or_name: str) -> dict:
+    """Detect obfuscation techniques in a function.
+
+    Checks for: MBA substitution, control flow flattening, opaque predicates,
+    instruction substitution, dead code insertion.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function to analyze.
+
+    Returns:
+        Detection results with techniques found and confidence level.
+    """
+    return _ida_tool("detect_obfuscation", binary_id, key=address_or_name,
+                     address_or_name=address_or_name)
+
+
+@mcp.tool()
+def detect_crypto_primitives(binary_id: str) -> dict:
+    """Detect known cryptographic constants and patterns in the binary.
+
+    Scans data sections for: AES S-box, SHA-256/SHA-1 constants, CRC32
+    polynomials, Base64 alphabets, and heuristic XOR cipher patterns.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        List of detected primitives with addresses and confidence.
+    """
+    return _ida_tool("detect_crypto_primitives", binary_id)
+
+
+@mcp.tool()
 def prove_overflow(
     binary_id: str,
     address_or_name: str,
