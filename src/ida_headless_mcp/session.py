@@ -910,6 +910,12 @@ class IDABinarySessionManager:
                 continue
             if decomp is None:
                 decomp = self.decompile(binary_id, item["address"], max_lines=max_lines)
+
+            # Verification enrichment: assess exploitability
+            verification = self._verify_pattern_hit(
+                binary_id, item, pattern, match_detail,
+            )
+
             matches.append({
                 "address": item["address"],
                 "name": item["name"],
@@ -918,6 +924,7 @@ class IDABinarySessionManager:
                 "string_refs": item.get("string_refs", [])[:10],
                 "decompile_preview": decomp["pseudocode"],
                 "trace_dataflow": flow if pattern == "unchecked_length" else None,
+                **verification,
             })
 
         payload = {
@@ -933,6 +940,138 @@ class IDABinarySessionManager:
             cache_path.write_text(json.dumps(payload, separators=(',', ':')), encoding='utf-8')
 
         return payload
+
+    def _verify_pattern_hit(
+        self,
+        binary_id: str,
+        item: dict,
+        pattern: str,
+        detail: str,
+    ) -> dict:
+        """Enrich a pattern hit with reachability and source analysis.
+
+        Returns verification fields to merge into the match dict:
+        - reachable_from_entry: bool — can this function be reached from exports/entry points?
+        - argument_source: str — where does the dangerous input come from?
+        - external_input: bool — does data flow from an external source (file/network)?
+        - confidence: str — 'high', 'medium', or 'low' exploitability assessment
+        - confidence_reason: str — why this confidence level
+        """
+        import ida_entry
+
+        address = item["address"]
+        callers = item.get("callers", [])
+        callers_count = item.get("callers_count", 0)
+
+        # 1. Reachability: does this function have callers? (orphan = test/dead code)
+        if callers_count == 0 and not callers:
+            # Check if it's an entry point itself
+            entry_count = ida_entry.get_entry_qty()
+            func_ea = int(address, 16) if isinstance(address, str) else address
+            is_entry = any(
+                ida_entry.get_entry(ida_entry.get_entry_ordinal(i)) == func_ea
+                for i in range(min(entry_count, 50))
+            )
+            if not is_entry:
+                return {
+                    "reachable_from_entry": False,
+                    "argument_source": "unknown",
+                    "external_input": False,
+                    "confidence": "low",
+                    "confidence_reason": (
+                        "Function has no callers — possibly dead code"
+                        " or only reachable via indirect call."
+                    ),
+                }
+
+        # 2. Argument source analysis
+        # Check if callers pass data from external sources
+        external_apis = {
+            "readfile", "recv", "recvfrom", "wsarecv", "fread", "fgets",
+            "winhttpreaddata", "internetreadfile", "read", "getline",
+            "regqueryvalueex", "getwindowtext", "getdlgitemtext",
+            "commandlinetoargv", "getcommandline", "getenvironmentvariable",
+        }
+        file_io_apis = {
+            "createfilea", "createfilew", "fopen", "_wfopen", "open",
+            "mapviewoffile", "readfile", "fread",
+        }
+
+        # Check if any caller uses external input APIs
+        caller_uses_external = False
+        caller_uses_file_io = False
+        for caller_name in callers[:10]:  # check up to 10 callers
+            caller_entry = self._indices[binary_id].lookup(caller_name)
+            if caller_entry is None:
+                continue
+            caller_callees = {c.lower() for c in caller_entry.get("callees", [])}
+            # Normalize (strip j_ prefix)
+            caller_callees |= {c[2:] for c in caller_callees if c.startswith("j_")}
+            if caller_callees & external_apis:
+                caller_uses_external = True
+            if caller_callees & file_io_apis:
+                caller_uses_file_io = True
+
+        # 3. Self-check: does THIS function use external input directly?
+        own_callees = {c.lower() for c in item.get("callees", [])}
+        own_callees |= {c[2:] for c in own_callees if c.startswith("j_")}
+        uses_external_directly = bool(own_callees & external_apis)
+        uses_file_io_directly = bool(own_callees & file_io_apis)
+
+        # 4. Determine argument source classification
+        if uses_external_directly:
+            arg_source = "direct_external_input"
+            external = True
+        elif uses_file_io_directly:
+            arg_source = "direct_file_io"
+            external = True
+        elif caller_uses_external:
+            arg_source = "caller_provides_external_input"
+            external = True
+        elif caller_uses_file_io:
+            arg_source = "caller_provides_file_data"
+            external = True
+        elif callers_count > 0:
+            arg_source = "caller_provided"
+            external = False  # can't prove it's external
+        else:
+            arg_source = "unknown"
+            external = False
+
+        # 5. Compute confidence
+        if external and callers_count > 0:
+            confidence = "high"
+            reason = (
+                f"Function is called by {callers_count} caller(s) and "
+                f"{'directly uses' if uses_external_directly else 'receives from callers using'} "
+                f"external input APIs. Data likely reaches the sink."
+            )
+        elif external:
+            confidence = "medium"
+            reason = (
+                "External input APIs detected in the call chain but "
+                "path validation has not been verified."
+            )
+        elif callers_count > 3:
+            confidence = "medium"
+            reason = (
+                f"Function has {callers_count} callers (widely used) but "
+                f"could not prove external data reaches the dangerous operation."
+            )
+        else:
+            confidence = "low"
+            reason = (
+                "Cannot prove attacker-controlled data reaches the dangerous operation. "
+                "Input may be validated before reaching this code."
+            )
+
+        return {
+            "reachable_from_entry": True,
+            "argument_source": arg_source,
+            "external_input": external,
+            "confidence": confidence,
+            "confidence_reason": reason,
+        }
 
     @requires(BinaryState.INDEXED)
     def diff_binary(self, binary_id_old: str, binary_id_new: str) -> dict[str, Any]:
