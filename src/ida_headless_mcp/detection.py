@@ -20,12 +20,17 @@ __all__ = ["detect_obfuscation", "detect_crypto_primitives"]
 _BASE64_ALPHA = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 
-def detect_obfuscation(microcode_text: str, pseudocode: str) -> dict[str, Any]:
-    """Detect obfuscation techniques from microcode and pseudocode.
+def detect_obfuscation(
+    microcode_text: str,
+    pseudocode: str,
+    cfunc: Any = None,
+) -> dict[str, Any]:
+    """Detect obfuscation techniques using structural analysis.
 
     Args:
         microcode_text: Raw microcode from get_microcode.
         pseudocode: Decompiled pseudocode text.
+        cfunc: Optional Hex-Rays cfunc_t for CTree analysis.
 
     Returns:
         Dict with obfuscation signals and confidence.
@@ -33,14 +38,17 @@ def detect_obfuscation(microcode_text: str, pseudocode: str) -> dict[str, Any]:
     techniques: list[str] = []
     details: dict[str, Any] = {}
 
-    # 1. MBA density — ratio of boolean ops mixed with arithmetic
-    mba = _check_mba_density(microcode_text)
+    # 1. MBA density — CTree expression depth if available, fallback to text
+    if cfunc is not None:
+        mba = _check_mba_ctree(cfunc)
+    else:
+        mba = _check_mba_density(microcode_text)
     details["mba_density"] = mba["density"]
     if mba["detected"]:
         techniques.append("mba_substitution")
-        details["mba_expressions"] = mba["examples"][:3]
+        details["mba_expressions"] = mba.get("examples", [])[:3]
 
-    # 2. Control flow flattening — dispatcher pattern
+    # 2. CFF — look for dispatcher in pseudocode structure
     cff = _check_cff(pseudocode)
     details["cff_detected"] = cff["detected"]
     if cff["detected"]:
@@ -48,25 +56,15 @@ def detect_obfuscation(microcode_text: str, pseudocode: str) -> dict[str, Any]:
         details["dispatcher_variable"] = cff.get("state_var")
         details["switch_cases"] = cff.get("case_count", 0)
 
-    # 3. Opaque predicates — complex conditions that are always true/false
-    opaque = _check_opaque_predicates(pseudocode)
-    details["opaque_predicate_count"] = opaque["count"]
-    if opaque["count"] > 0:
-        techniques.append("opaque_predicates")
-        details["opaque_examples"] = opaque["examples"][:3]
-
-    # 4. Expression depth — substitution inflates simple ops
-    depth = _check_expression_depth(pseudocode)
+    # 3. Expression depth via CTree (structural, not parenthesis counting)
+    if cfunc is not None:
+        depth = _check_expression_depth_ctree(cfunc)
+    else:
+        depth = _check_expression_depth(pseudocode)
     details["max_expression_depth"] = depth["max_depth"]
     details["deep_expressions"] = depth["count"]
     if depth["count"] > 3:
         techniques.append("instruction_substitution")
-
-    # 5. Dead code / junk instructions
-    dead = _check_dead_code(microcode_text)
-    details["dead_assignments"] = dead["count"]
-    if dead["count"] > 5:
-        techniques.append("dead_code_insertion")
 
     obfuscated = len(techniques) > 0
     if len(techniques) >= 3:
@@ -283,3 +281,97 @@ def _check_dead_code(microcode: str) -> dict[str, Any]:
             dead_count += 1
 
     return {"count": dead_count}
+
+
+
+def _check_mba_ctree(cfunc: Any) -> dict[str, Any]:
+    """Check MBA density via CTree expression tree structure."""
+    import ida_hexrays
+
+    bool_ops = {
+        ida_hexrays.cot_band, ida_hexrays.cot_bor,
+        ida_hexrays.cot_xor, ida_hexrays.cot_bnot,
+    }
+    arith_ops = {
+        ida_hexrays.cot_add, ida_hexrays.cot_sub,
+        ida_hexrays.cot_mul, ida_hexrays.cot_neg,
+    }
+
+    # Count expressions that mix bool + arith in the same assignment RHS
+    mixed_count = 0
+    total_assigns = 0
+    examples: list[str] = []
+
+    class Visitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self):
+            super().__init__(ida_hexrays.CV_FAST)
+
+        def visit_expr(self, expr):
+            nonlocal mixed_count, total_assigns
+            if expr.op == ida_hexrays.cot_asg:
+                total_assigns += 1
+                ops_found: set[str] = set()
+                _collect_ops(expr.y, bool_ops, arith_ops, ops_found)
+                if "bool" in ops_found and "arith" in ops_found:
+                    mixed_count += 1
+                    if len(examples) < 5:
+                        examples.append(f"0x{expr.ea:x}")
+            return 0
+
+    Visitor().apply_to_exprs(cfunc.body, None)
+
+    density = mixed_count / max(total_assigns, 1)
+    return {
+        "detected": mixed_count >= 3 and density > 0.2,
+        "density": round(density, 3),
+        "mixed_expressions": mixed_count,
+        "examples": examples,
+    }
+
+
+def _collect_ops(expr: Any, bool_ops: set, arith_ops: set, result: set) -> None:
+    """Recursively collect op categories in an expression tree."""
+    if expr is None:
+        return
+    if expr.op in bool_ops:
+        result.add("bool")
+    if expr.op in arith_ops:
+        result.add("arith")
+    if hasattr(expr, 'x') and expr.x:
+        _collect_ops(expr.x, bool_ops, arith_ops, result)
+    if hasattr(expr, 'y') and expr.y:
+        _collect_ops(expr.y, bool_ops, arith_ops, result)
+
+
+def _check_expression_depth_ctree(cfunc: Any) -> dict[str, Any]:
+    """Check expression tree depth via CTree (structural, not text)."""
+    import ida_hexrays
+
+    max_depth = 0
+    deep_count = 0
+
+    class Visitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self):
+            super().__init__(ida_hexrays.CV_FAST)
+
+        def visit_expr(self, expr):
+            nonlocal max_depth, deep_count
+            if expr.op == ida_hexrays.cot_asg:
+                d = _expr_depth(expr.y)
+                if d > max_depth:
+                    max_depth = d
+                if d > 6:  # threshold for 'abnormally deep'
+                    deep_count += 1
+            return 0
+
+    Visitor().apply_to_exprs(cfunc.body, None)
+    return {"max_depth": max_depth, "count": deep_count}
+
+
+def _expr_depth(expr: Any) -> int:
+    """Compute depth of an expression tree."""
+    if expr is None:
+        return 0
+    left = _expr_depth(getattr(expr, 'x', None)) if hasattr(expr, 'x') else 0
+    right = _expr_depth(getattr(expr, 'y', None)) if hasattr(expr, 'y') else 0
+    return 1 + max(left, right)
