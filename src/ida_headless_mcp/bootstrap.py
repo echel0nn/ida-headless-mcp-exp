@@ -100,8 +100,13 @@ def bootstrap_ida(settings: Settings) -> ModuleType:
     """
     _ensure_ida_install(settings)
     os.environ.setdefault("IDADIR", str(settings.ida_dir))
+
+    # Fast path: if ida is already installed and activated, skip pip/activation
+    bin_link = _ida_pkg_dir() / "bin"
+    if importlib.util.find_spec("ida") is not None and (bin_link.exists() or bin_link.is_symlink()):
+        return importlib.import_module("ida")
+
     _install_local_ida_package(settings)
     _activate_idalib(settings)
     importlib.invalidate_caches()
-    ida_mod = importlib.import_module("ida")
-    return ida_mod
+    return importlib.import_module("ida")
