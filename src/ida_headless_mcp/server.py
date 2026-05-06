@@ -95,8 +95,8 @@ class _Frontend:
         # Build a human-readable message from best available info
         action_messages = {
             "alive": "Worker is running. Result will be cached shortly.",
-            "spawned": "Worker just started. IDA bootstrap takes ~15s, then your request processes.",
-            "respawned": "Worker was dead and has been respawned. IDA bootstrap takes ~15s.",
+            "spawning": "Worker is starting. IDA bootstrap takes ~15s, then your request processes.",
+            "queued": "Worker is queued to start (sequential bootstrap). Will process shortly.",
             "spawn_failed": "CRITICAL: Worker failed to start. Check logs/ directory.",
             "not_ready": "Binary is still being analyzed by idat64. Poll with poll_analysis().",
         }
