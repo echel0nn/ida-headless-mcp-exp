@@ -101,9 +101,15 @@ def bootstrap_ida(settings: Settings) -> ModuleType:
     # Fast path: if ida is already installed and activated, skip everything
     os.environ.setdefault("IDADIR", str(settings.ida_dir))
     bin_link = _ida_pkg_dir() / "bin"
-    if importlib.util.find_spec("ida") is not None and (bin_link.exists() or bin_link.is_symlink()):
+    _spec = importlib.util.find_spec("ida")
+    _bin_ok = bin_link.exists() or bin_link.is_symlink()
+    import sys as _sys
+    print(f'[bootstrap] find_spec(ida)={_spec is not None} bin_link={bin_link} exists={_bin_ok}', file=_sys.stderr, flush=True)
+    if _spec is not None and _bin_ok:
+        print(f'[bootstrap] FAST PATH', file=_sys.stderr, flush=True)
         return importlib.import_module("ida")
 
+    print(f'[bootstrap] SLOW PATH - running pip/activation', file=_sys.stderr, flush=True)
     # Slow path: verify IDA install, pip install package, create junction
     _ensure_ida_install(settings)
 
