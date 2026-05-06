@@ -22,6 +22,7 @@ class ProofMixin:
         source_contains: list[str] | None = None,
         max_steps: int = 10,
     ) -> dict[str, Any]:
+        """Trace a sink argument backward through local assignment hops."""
         import ida_funcs
 
         from .hexrays_analysis import decompile_cfunc, trace_ctree_dataflow
@@ -179,6 +180,7 @@ class ProofMixin:
                 self.sink_ea = int(sink_info['matches'][0]['address'], 16)
 
             def visit_insn(self, insn):
+                """CTree visitor callback."""
                 if insn.op != ida_hexrays.cit_if:
                     return 0
                 if insn.ea < self.sink_ea or insn.ea == 0:

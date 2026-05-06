@@ -152,6 +152,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         )
 
     def close_binary(self, binary_id: str, save: bool = False) -> dict[str, Any]:
+        """Remove a binary from the registry and close its IDA database if active."""
         if self._active_binary_id == binary_id:
             # Always save the .i64 so warm reopens work (0.5s vs 17s).
             # The `save` param controls whether user annotations persist.
@@ -162,6 +163,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         return {"binary_id": binary_id, "closed": True}
 
     def list_binaries(self) -> list[dict[str, Any]]:
+        """Return a metadata summary for every registered binary."""
         result = []
         for rec in self._records.values():
             lc = self._lifecycle.get(rec.binary_id)
@@ -178,6 +180,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         return result
 
     def binary_metadata(self, binary_id: str) -> dict[str, Any]:
+        """Return full metadata record for a single binary."""
         rec = self._require(binary_id)
         lc = self._lifecycle.get(binary_id)
         state = lc.state.name if lc else 'UNKNOWN'
@@ -243,6 +246,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         exclude_thunks: bool = False,
         exclude_libraries: bool = False,
     ) -> dict[str, Any]:
+        """List functions from the cached index with optional filtering and pagination."""
         self._activate(binary_id)
         self._ensure_indexed(binary_id)
         index = self._indices[binary_id]
@@ -338,6 +342,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
 
     @requires(BinaryState.ACTIVE)
     def xrefs_to(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
+        """Return cross-references to the given address or symbol."""
         import ida_funcs
         import idautils
 
@@ -356,6 +361,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
 
     @requires(BinaryState.ACTIVE)
     def xrefs_from(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
+        """Return outgoing cross-references from a function."""
         import ida_funcs
         import idautils
 
@@ -387,6 +393,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
 
     @requires(BinaryState.ACTIVE)
     def imports(self, binary_id: str) -> dict[str, Any]:
+        """List all imported symbols grouped by library module."""
         import ida_nalt
 
         results: list[dict[str, Any]] = []
@@ -410,6 +417,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
 
     @requires(BinaryState.ACTIVE)
     def exports(self, binary_id: str) -> dict[str, Any]:
+        """List all exported symbols for the binary."""
         import idautils
 
         results = [
@@ -424,16 +432,19 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
 
     @requires(BinaryState.ACTIVE)
     def segments(self, binary_id: str) -> dict[str, Any]:
+        """Return segment table with names, ranges, and permissions."""
         rec = self._require(binary_id)
         return {"binary_id": binary_id, "total": len(rec.sections), "segments": rec.sections}
 
     @requires(BinaryState.ACTIVE)
     def checksec(self, binary_id: str) -> dict[str, Any]:
+        """Return PE mitigation flags (NX, ASLR, stack canary, etc.)."""
         rec = self._require(binary_id)
         return {"binary_id": binary_id, **rec.mitigations}
 
     @requires(BinaryState.ACTIVE)
     def stack_frame(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
+        """Return stack frame sizing and locals layout for a function."""
         import ida_funcs
         import idc
 
@@ -460,6 +471,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         depth: int = 2,
         direction: str = "both",
     ) -> dict[str, Any]:
+        """Build a bounded call graph rooted at a function."""
         import ida_funcs
         import idautils
 
@@ -472,6 +484,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         edges: list[dict[str, Any]] = []
 
         def add_node(func_ea: int) -> None:
+            """Add a function node to the graph dict if not already present."""
             if func_ea in nodes:
                 return
             f = ida_funcs.get_func(func_ea)
@@ -484,6 +497,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
             }
 
         def walk_callees(func_ea: int, current_depth: int) -> None:
+            """Recursively collect callee edges up to depth limit."""
             add_node(func_ea)
             if current_depth >= depth:
                 return
@@ -503,6 +517,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
                         walk_callees(callee.start_ea, current_depth + 1)
 
         def walk_callers(func_ea: int, current_depth: int) -> None:
+            """Recursively collect caller edges up to depth limit."""
             add_node(func_ea)
             if current_depth >= depth:
                 return
@@ -560,6 +575,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         limit: int = 20,
         max_lines: int = 250,
     ) -> dict[str, Any]:
+        """Decompile multiple functions selected by structured filters."""
         result = self._indices[binary_id].query(
             name_pattern=name_pattern,
             callers_of=callers_of,

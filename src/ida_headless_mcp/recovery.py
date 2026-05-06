@@ -356,6 +356,7 @@ def _detect_inheritance_from_constructors(
         confidence: str,
         signal: str,
     ) -> None:
+        """Emit a deduplicated inheritance edge."""
         base_id = vtable_to_class.get(base_vt)
         derived_id = vtable_to_class.get(derived_vt)
         if not base_id or not derived_id or base_id == derived_id:
@@ -527,6 +528,7 @@ def _compute_depth(edges: list[dict[str, str]]) -> int:
         children.setdefault(e["base"], []).append(e["derived"])
 
     def depth(node: str, visited: set) -> int:
+        """Recursively compute depth of this node in the hierarchy."""
         if node in visited:
             return 0
         visited.add(node)

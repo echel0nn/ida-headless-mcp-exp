@@ -490,6 +490,7 @@ def _build_session_stub(sha_dir: Path):
             self._lc.state = BinaryState.INDEXED
 
         def get(self, bid):
+            """Return the wrapped lifecycle instance."""
             return self._lc
 
         def _reconcile(self, lc):
@@ -549,6 +550,7 @@ def _update_state(sha_dir: Path, **updates: Any) -> None:
 
 
 def main() -> int:
+    """Entry point for worker subprocess."""
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--sha256", required=True)
