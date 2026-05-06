@@ -231,6 +231,11 @@ class LifecycleManager:
             pp = env.get("PYTHONPATH", "")
             if src_dir not in pp:
                 env["PYTHONPATH"] = src_dir + (os.pathsep + pp if pp else "")
+            # Route stderr to worker log — NEVER /dev/null.
+            # idalib C code writes to fd 2 on abort; DEVNULL hides the cause of death.
+            log_dir = self.cache_dir / lc.sha256 / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_fh = open(log_dir / "worker_stderr.log", "a", encoding="utf-8")
             proc = subprocess.Popen(
                 [
                     sys.executable, "-m", "ida_headless_mcp.binary_worker",
@@ -238,10 +243,11 @@ class LifecycleManager:
                     "--cache-dir", str(self.cache_dir),
                 ],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=log_fh,
                 cwd=src_dir,
                 env=env,
             )
+            log_fh.close()  # Parent closes its copy; child keeps fd via inheritance
             self._worker_procs[lc.sha256] = proc
             self._worker_activity[lc.sha256] = time.monotonic()
             lc.decompile_worker_pid = proc.pid
