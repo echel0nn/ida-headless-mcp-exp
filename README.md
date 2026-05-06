@@ -199,14 +199,21 @@ Everything reimplemented from scratch. No code copied. Just inspired by brillian
 
 | Project | What we learned | License |
 |---|---|---|
-| [CAPA](https://github.com/mandiant/capa) | Behavioral rules + ATT&CK | Apache-2.0 |
-| [FLOSS](https://github.com/mandiant/flare-floss) | Stack string detection | Apache-2.0 |
-| [binbit](https://github.com/nickcano/binbit) | Fast SMT solving | MIT |
-| [mkYARA](https://github.com/fox-it/mkYARA) | BB-level YARA with wildcards | MIT |
-| [HexRaysPyTools](https://github.com/igogo-x86/HexRaysPyTools) | Vtable constructor detection | MIT |
-| [Diaphora](https://github.com/joxeankoret/diaphora) | Structure hashing | GPL |
-| [hrtng](https://github.com/KasperskyLab/hrtng) | 107 API hash algorithms | GPL |
-| [d810-ng](https://github.com/w00tzenheimer/d810-ng) | OLLVM detection | GPL |
+| [CAPA](https://github.com/mandiant/capa) | 678 behavioral rules + 106 ATT&CK technique mappings | Apache-2.0 |
+| [FLOSS](https://github.com/mandiant/flare-floss) | Stack string detection via virtual stack buffer + MOV width handling | Apache-2.0 |
+| [binbit](https://github.com/nickcano/binbit) | QF_BV SMT solver for 4ms overflow proofs | MIT |
+| [angr](https://github.com/angr/angr) | Symbolic execution engine for path feasibility + constrained reachability | BSD |
+| [mkYARA](https://github.com/fox-it/mkYARA) | Operand wildcarding modes (loose/normal/strict) for YARA generation | MIT |
+| [yara_fn](https://gist.github.com/williballenthin/3abc9577bede0aeef25526b201732246) | Per-basic-block YARA with IDA fixup masking (Willi Ballenthin / FLARE) | Public |
+| [VulFi](https://github.com/Accenture/VulFi) | Dangerous function xref patterns (our search_pattern surpasses it) | MIT |
+| [HexRaysPyTools](https://github.com/igogo-x86/HexRaysPyTools) | Vtable store-to-this+0 constructor detection for class hierarchy | MIT |
+| [Diaphora](https://github.com/joxeankoret/diaphora) | Structure hashing for cross-binary function similarity | GPL |
+| [Obpo](https://github.com/nickcano/obpo) | Per-block symbolic state solving approach for CFF deflattening | MIT |
+| [hrtng](https://github.com/KasperskyLab/hrtng) | 107 API hash algorithm definitions (ROR13, DJB2, CRC32, FNV-1a, malware-specific) | GPL |
+| [OALabs HashDB](https://github.com/OALabs/hashdb) | 33,167 precomputed hash-to-API entries across 107 algorithms | MIT |
+| [FindCrypt](https://github.com/d3v1l401/FindCrypt-Ghidra) / [signsrch](https://github.com/nihilus/IDA-Signsrch) | Crypto constant signature database (38 signatures, 27 algorithms) | GPL |
+| [d810-ng](https://github.com/w00tzenheimer/d810-ng) | OLLVM/Tigress detection signature patterns | GPL |
+| gooMBA (IDA built-in) | MBA simplification runs automatically during decompile — we don't reimplement it | IDA license |
 
 ## License
 

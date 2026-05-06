@@ -581,7 +581,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         ]
         payload = {
             "binary_id": binary_id,
-            "matched_total": result["total"],
+            "total_matched": result["total"],
             "returned": len(decompiled),
             "dropped": max(0, result["total"] - offset - len(decompiled)),
             "drop_reason": "max_results" if result["total"] > offset + len(decompiled) else None,
@@ -789,62 +789,6 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         rec = self._require(binary_id)
         self._indices[binary_id] = self._load_or_build_index(rec.sha256)
 
-    def _collect_metadata(self, *, binary_id: str, path: Path, sha256: str, size_bytes: int) -> BinaryRecord:
-        import ida_funcs
-        import ida_loader
-        import ida_nalt
-        import ida_segment
-        import ida_strlist
-        import idautils
-        import idc
-
-        sections: list[dict[str, Any]] = []
-        for seg_ea in idautils.Segments():
-            seg = ida_segment.getseg(seg_ea)
-            if seg is None:
-                continue
-            sections.append(
-                {
-                    "name": ida_segment.get_segm_name(seg),
-                    "start": f"0x{seg.start_ea:x}",
-                    "end": f"0x{seg.end_ea:x}",
-                    "size_bytes": seg.size(),
-                    "permissions": _seg_perms(seg),
-                }
-            )
-
-        imports_count = 0
-        for i in range(ida_nalt.get_import_module_qty()):
-            collector: list[int] = []
-            ida_nalt.enum_import_names(i, lambda _ea, _name, _ord: collector.append(1) or True)
-            imports_count += len(collector)
-
-        exports_count = len(list(idautils.Entries()))
-        badaddr = (1 << _bitness()) - 1
-        entry_points = [
-            f"0x{ea:x}" for ea in (idc.get_entry(i) for i in range(idc.get_entry_qty())) if ea != badaddr
-        ]
-        mitigations = _pe_mitigations(path) if path.suffix.lower() in {".exe", ".dll", ".sys"} else {"type": "unknown"}
-
-        return BinaryRecord(
-            binary_id=binary_id,
-            path=path,
-            sha256=sha256,
-            size_bytes=size_bytes,
-            format=str(ida_loader.get_file_type_name()),
-            arch=ida_nalt.get_root_filename() and _arch_name() or "unknown",
-            bits=_bitness(),
-            entry_points=entry_points,
-            function_count=ida_funcs.get_func_qty(),
-            segment_count=ida_segment.get_segm_qty(),
-            imports_count=imports_count,
-            exports_count=exports_count,
-            strings_count=ida_strlist.get_strlist_qty(),
-            mitigations=mitigations,
-            sections=sections,
-            active=True,
-            root_filename=ida_nalt.get_root_filename(),
-        )
 
     def _cache_file(self, sha256: str, address_or_name: str) -> Path:
         safe = address_or_name.replace("/", "_").replace("\\", "_").replace(":", "_")
@@ -853,8 +797,6 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
     def _index_cache_path(self, sha256: str) -> Path:
         return self.settings.cache_dir / sha256 / "index.json"
 
-    def _workspace_path(self, sha256: str) -> Path:
-        return self.settings.cache_dir / sha256 / "workspace"
 
     def _pattern_cache_path(self, sha256: str, pattern_type: str) -> Path:
         return self.settings.cache_dir / sha256 / "patterns" / f"{pattern_type}_v1.json"
@@ -867,23 +809,6 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         index.save(index_path)
         return index
 
-    def _touch_manifest(self, sha256: str, root_filename: str, function_count: int) -> None:
-        import time
-
-        manifest: dict[str, Any] = {}
-        if self._manifest_path.exists():
-            try:
-                manifest = json.loads(self._manifest_path.read_text(encoding='utf-8'))
-            except (OSError, json.JSONDecodeError):
-                # Corrupt or unreadable manifest — fall through with an empty dict;
-                # the upcoming write_text replaces it with a fresh, valid manifest.
-                pass
-        manifest[sha256] = {
-            "last_accessed": time.time(),
-            "root_filename": root_filename,
-            "function_count": function_count,
-        }
-        self._manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
 
     def evict_lru(self, keep_n: int = 50) -> list[str]:
         """Remove cache for least-recently-used binaries beyond ``keep_n``.

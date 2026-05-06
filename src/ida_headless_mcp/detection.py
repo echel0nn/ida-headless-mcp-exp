@@ -316,50 +316,6 @@ def _check_cff(pseudocode: str) -> dict[str, Any]:
     return {"detected": False}
 
 
-def _check_opaque_predicates(pseudocode: str) -> dict[str, Any]:
-    """Check for likely opaque predicate patterns."""
-    patterns = [
-        r'if\s*\(\s*\w+\s*\*\s*\w+\s*%\s*2\s*==\s*0\s*\)',  # x*x % 2 == 0
-        r'if\s*\(\s*\(\s*\w+\s*\|\s*1\s*\)\s*!=\s*0\s*\)',   # (x|1) != 0
-        r'if\s*\(\s*\w+\s*\*\s*\(\s*\w+\s*\+\s*1\s*\)\s*%\s*2',  # x*(x+1) % 2
-        r'if\s*\(\s*\w+\s*\^\s*\w+\s*\|\s*\w+\s*&\s*\w+\s*\)',   # complex MBA in condition
-    ]
-    examples: list[str] = []
-    for pat in patterns:
-        for m in re.finditer(pat, pseudocode):
-            examples.append(m.group()[:60])
-
-    return {"count": len(examples), "examples": examples}
-
-
-def _check_expression_depth(pseudocode: str) -> dict[str, Any]:
-    """Check for abnormally deep expressions (substitution obfuscation)."""
-    max_depth = 0
-    deep_count = 0
-    for line in pseudocode.splitlines():
-        depth = line.count('(')
-        if depth > max_depth:
-            max_depth = depth
-        if depth > 5:
-            deep_count += 1
-
-    return {"max_depth": max_depth, "count": deep_count}
-
-
-def _check_dead_code(microcode: str) -> dict[str, Any]:
-    """Check for dead assignments in microcode."""
-    # Look for assignments whose LHS never appears again
-    assigns = re.findall(r'(\w+)\s*=\s', microcode)
-    dead_count = 0
-    for var in assigns:
-        # Count occurrences (rough heuristic)
-        count = microcode.count(var)
-        if count <= 1:  # only the assignment itself
-            dead_count += 1
-
-    return {"count": dead_count}
-
-
 
 def _check_mba_ctree(cfunc: Any) -> dict[str, Any]:
     """Check MBA density via CTree expression tree structure."""
