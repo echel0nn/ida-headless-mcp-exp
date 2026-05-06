@@ -1907,10 +1907,12 @@ def get_generation(binary_id: str) -> dict:
 
 
 def create_server() -> FastMCP:
+    """Create and return the FastMCP server instance."""
     return mcp
 
 
 def main() -> None:
+    """Entry point for stdio MCP server."""
     transport = os.environ.get("IDA_HEADLESS_MCP_TRANSPORT", "stdio")
     mcp.run(transport=transport)
 

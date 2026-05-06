@@ -52,6 +52,7 @@ class BinaryLifecycle:
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible dict."""
         return {
             "binary_id": self.binary_id,
             "sha256": self.sha256,
@@ -67,6 +68,7 @@ class BinaryLifecycle:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BinaryLifecycle:
+        """Deserialize from dict."""
         return cls(
             binary_id=data["binary_id"],
             sha256=data["sha256"],
@@ -489,12 +491,15 @@ class LifecycleManager:
     # ------------------------------------------------------------------
 
     def get(self, binary_id: str) -> BinaryLifecycle | None:
+        """Get lifecycle by binary_id."""
         return self._lifecycles.get(binary_id)
 
     def all(self) -> list[BinaryLifecycle]:
+        """Return all tracked lifecycles."""
         return list(self._lifecycles.values())
 
     def workspace_binary(self, lc: BinaryLifecycle) -> Path:
+        """Path to the binary in its workspace directory."""
         return self.cache_dir / lc.sha256 / "workspace" / lc.root_filename
 
 

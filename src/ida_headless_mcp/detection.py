@@ -340,6 +340,7 @@ def _check_mba_ctree(cfunc: Any) -> dict[str, Any]:
             super().__init__(ida_hexrays.CV_FAST)
 
         def visit_expr(self, expr):
+            """CTree visitor callback."""
             nonlocal mixed_count, total_assigns
             if expr.op == ida_hexrays.cot_asg:
                 total_assigns += 1
@@ -388,6 +389,7 @@ def _check_expression_depth_ctree(cfunc: Any) -> dict[str, Any]:
             super().__init__(ida_hexrays.CV_FAST)
 
         def visit_expr(self, expr):
+            """CTree visitor callback."""
             nonlocal max_depth, deep_count
             if expr.op == ida_hexrays.cot_asg:
                 d = _expr_depth(expr.y)

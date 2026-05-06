@@ -93,6 +93,7 @@ class FunctionIndex:
         offset: int = 0,
         limit: int = 100,
     ) -> dict[str, Any]:
+        """Filter and paginate function index entries."""
         rows = self.entries
         np = name_pattern.lower().strip()
         string_match = has_string_ref_matching.lower().strip()
@@ -137,6 +138,7 @@ class FunctionIndex:
 
 
 def build_function_index() -> FunctionIndex:
+    """Build function index from the currently loaded IDA database."""
     import ida_funcs
     import ida_gdl
     import ida_name

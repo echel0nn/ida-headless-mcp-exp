@@ -36,6 +36,7 @@ class _CallMatch:
 
 
 def decompile_cfunc(func: Any) -> Any:
+    """Decompile func with Hex-Rays, raising RuntimeError if the decompiler is unavailable."""
     import ida_hexrays
 
     if not ida_hexrays.init_hexrays_plugin():
@@ -44,6 +45,7 @@ def decompile_cfunc(func: Any) -> Any:
 
 
 def get_argument_names(cfunc: Any) -> list[str]:
+    """Return names of formal arguments for a decompiled function."""
     out: list[str] = []
     try:
         for arg in cfunc.arguments:
@@ -62,6 +64,7 @@ def query_ctree_calls(
     operand_type_is: str = "",
     limit: int = 50,
 ) -> dict[str, Any]:
+    """Scan a decompiled function's CTree for call expressions matching the given filters."""
     import ida_hexrays
 
     target_fn = target_function.strip().lower()
@@ -75,6 +78,7 @@ def query_ctree_calls(
             super().__init__(ida_hexrays.CV_FAST | ida_hexrays.CV_PARENTS)
 
         def visit_expr(self, expr):  # type: ignore[override]
+            """CTree visitor callback."""
             nonlocal matches
             if expr.op != ida_hexrays.cot_call:
                 return 0
@@ -145,6 +149,7 @@ def query_ctree_calls(
 
 
 def get_microcode_text(cfunc: Any, maturity: str = "current") -> dict[str, Any]:
+    """Dump Hex-Rays microcode text for a decompiled function at a given maturity level."""
     import ida_hexrays
 
     mba = cfunc.mba
@@ -178,6 +183,7 @@ def trace_ctree_dataflow(
     source_contains: list[str] | None = None,
     max_steps: int = 10,
 ) -> dict[str, Any]:
+    """Trace a sink argument backward through local assignment hops in the CTree."""
     sink = query_ctree_calls(cfunc, target_function=sink_function, argument_index=sink_argument_index, limit=1)
     if not sink["matches"]:
         return {
@@ -257,6 +263,7 @@ def _collect_assignments(cfunc: Any) -> list[dict[str, Any]]:
             super().__init__(ida_hexrays.CV_FAST)
 
         def visit_expr(self, expr):  # type: ignore[override]
+            """CTree visitor callback."""
             if expr.op not in assign_ops:
                 return 0
             lhs = _expr_preview(expr.x, cfunc)
@@ -505,6 +512,7 @@ def query_ctree_call_sequences(
             super().__init__(ida_hexrays.CV_FAST)
 
         def visit_expr(self, expr):  # type: ignore[override]
+            """CTree visitor callback."""
             if expr.op != ida_hexrays.cot_call:
                 return 0
             callee = _callee_name(expr)
@@ -613,6 +621,7 @@ def query_ctree_unchecked_calls(
             super().__init__(ida_hexrays.CV_FAST)
 
         def visit_expr(self, expr):  # type: ignore[override]
+            """CTree visitor callback."""
             if expr.op != ida_hexrays.cot_asg:
                 return 0
             rhs = expr.y
@@ -639,6 +648,7 @@ def query_ctree_unchecked_calls(
             super().__init__(ida_hexrays.CV_FAST)
 
         def visit_insn(self, insn):  # type: ignore[override]
+            """CTree visitor callback."""
             if insn.op != ida_hexrays.cit_if:
                 return 0
             cond = insn.cif.expr
@@ -1488,6 +1498,7 @@ def assess_exploitability(
             self.sink_ea = int(sink_addr, 16) if sink_addr.startswith("0x") else 0
 
         def visit_insn(self, insn):
+            """CTree visitor callback."""
             if insn.op != ida_hexrays.cit_if:
                 return 0
             cond_preview = _expr_preview(insn.cif.expr, cfunc)
