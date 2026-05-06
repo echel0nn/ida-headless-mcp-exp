@@ -116,12 +116,7 @@ class LifecycleManager:
         Never exits (daemon thread dies with the server process).
         """
         while True:
-            try:
-                self._arbiter_tick()
-            except Exception as exc:
-                import sys, traceback
-                print(f"[arbiter] tick error: {exc}", file=sys.stderr, flush=True)
-                traceback.print_exc(file=sys.stderr)
+            self._arbiter_tick()
             time.sleep(ARBITER_TICK)
 
     def _arbiter_tick(self) -> None:
