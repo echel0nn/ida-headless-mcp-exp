@@ -121,6 +121,10 @@ class _Frontend:
 
         return result
 
+    # Default timeout for blocking wait (seconds)
+    TOOL_WAIT_TIMEOUT = 120
+    POLL_INTERVAL = 1.0
+
     def _cached_or_pending(
         self,
         binary_id: str,
@@ -128,19 +132,46 @@ class _Frontend:
         key: str = "",
         params: dict | None = None,
     ) -> dict[str, Any]:
-        """Return a cached tool result, or queue the request and return pending."""
+        """Return cached result or block until the worker produces one.
+
+        Queues the request, ensures a worker is alive, then polls the
+        cache for up to TOOL_WAIT_TIMEOUT seconds. Returns the result
+        as soon as it appears. Only returns 'pending' if the timeout
+        expires.
+        """
+        import time as _time
+
         sha = self._sha(binary_id)
         lc = self.lifecycle.get(binary_id)
         if lc and lc.state < BinaryState.READY:
             return self._pending(binary_id, lc, "not_ready")
+
+        # Check cache first
         cached = self.cache.get_result(sha, tool, key)
         if cached:
             cached["binary_id"] = binary_id
             cached["status"] = "ready"
             return cached
-        # Queue the request and ensure worker is alive to process it
+
+        # Queue and ensure worker
         self.cache.queue_request(sha, tool, params or {})
         worker_action = self.lifecycle.ensure_worker(binary_id)
+
+        # Block and poll until result appears or timeout
+        deadline = _time.monotonic() + self.TOOL_WAIT_TIMEOUT
+        while _time.monotonic() < deadline:
+            _time.sleep(self.POLL_INTERVAL)
+            cached = self.cache.get_result(sha, tool, key)
+            if cached:
+                cached["binary_id"] = binary_id
+                cached["status"] = "ready"
+                return cached
+            # Check if worker died (don't wait forever for nothing)
+            if not self.lifecycle._worker_is_alive(lc):
+                # Try to respawn
+                self.lifecycle.ensure_worker(binary_id)
+
+        # Timeout — return pending with diagnostics
         return self._pending(binary_id, lc, worker_action)
 
 
@@ -438,6 +469,20 @@ def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dic
     fe.cache.queue_decompile(sha, address_or_name)
     worker_action = fe.lifecycle.ensure_worker(binary_id)
     lc = fe.lifecycle.get(binary_id)
+
+    # Block and poll until result appears or timeout
+    import time as _time
+    deadline = _time.monotonic() + fe.TOOL_WAIT_TIMEOUT
+    while _time.monotonic() < deadline:
+        _time.sleep(fe.POLL_INTERVAL)
+        cached = fe.cache.get_decompile(sha, address_or_name)
+        if cached:
+            cached["binary_id"] = binary_id
+            cached["status"] = "ready"
+            return cached
+        if lc and not fe.lifecycle._worker_is_alive(lc):
+            fe.lifecycle.ensure_worker(binary_id)
+
     return fe._pending(binary_id, lc, worker_action)
 
 
@@ -534,6 +579,19 @@ def search_pattern(binary_id: str, pattern_type: str, name_pattern: str = "", li
     fe.cache.queue_pattern(sha, pattern_type)
     worker_action = fe.lifecycle.ensure_worker(binary_id)
     lc = fe.lifecycle.get(binary_id)
+
+    import time as _time
+    deadline = _time.monotonic() + fe.TOOL_WAIT_TIMEOUT
+    while _time.monotonic() < deadline:
+        _time.sleep(fe.POLL_INTERVAL)
+        cached = fe.cache.get_pattern(sha, pattern_type)
+        if cached:
+            cached["binary_id"] = binary_id
+            cached["status"] = "ready"
+            return cached
+        if lc and not fe.lifecycle._worker_is_alive(lc):
+            fe.lifecycle.ensure_worker(binary_id)
+
     return fe._pending(binary_id, lc, worker_action)
 
 
@@ -558,6 +616,19 @@ def binary_survey(binary_id: str, max_hotspots: int = 10) -> dict:
     fe.cache.queue_request(sha, "binary_survey", {"max_hotspots": max_hotspots})
     worker_action = fe.lifecycle.ensure_worker(binary_id)
     lc = fe.lifecycle.get(binary_id)
+
+    import time as _time
+    deadline = _time.monotonic() + fe.TOOL_WAIT_TIMEOUT
+    while _time.monotonic() < deadline:
+        _time.sleep(fe.POLL_INTERVAL)
+        cached = fe.cache.get_result(sha, "binary_survey")
+        if cached:
+            cached["binary_id"] = binary_id
+            cached["status"] = "ready"
+            return cached
+        if lc and not fe.lifecycle._worker_is_alive(lc):
+            fe.lifecycle.ensure_worker(binary_id)
+
     return fe._pending(binary_id, lc, worker_action)
 
 
@@ -665,6 +736,20 @@ def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> d
         return cached
     fe.cache.queue_request(sha, tool_name, {"binary_id": binary_id, "_cache_key": key, **params})
     worker_action = fe.lifecycle.ensure_worker(binary_id)
+
+    # Block and poll until result appears or timeout
+    import time as _time
+    deadline = _time.monotonic() + fe.TOOL_WAIT_TIMEOUT
+    while _time.monotonic() < deadline:
+        _time.sleep(fe.POLL_INTERVAL)
+        cached = fe.cache.get_result(sha, tool_name, key)
+        if cached:
+            cached["binary_id"] = binary_id
+            cached["status"] = "ready"
+            return cached
+        if lc and not fe.lifecycle._worker_is_alive(lc):
+            fe.lifecycle.ensure_worker(binary_id)
+
     return fe._pending(binary_id, lc, worker_action)
 
 
