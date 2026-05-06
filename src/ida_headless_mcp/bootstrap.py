@@ -17,7 +17,7 @@ __all__ = ["bootstrap_ida"]
 
 
 def _run_python(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, *args], text=True, capture_output=True)
+    return subprocess.run([sys.executable, *args], text=True, capture_output=True, stdin=subprocess.DEVNULL)
 
 
 def _ensure_ida_install(settings: Settings) -> None:
@@ -74,6 +74,7 @@ def _activate_idalib(settings: Settings) -> None:
             ["cmd", "/c", "mklink", "/J", str(bin_link), str(settings.ida_dir)],
             text=True,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
         )
         if mk.returncode != 0:
             raise RuntimeError(
