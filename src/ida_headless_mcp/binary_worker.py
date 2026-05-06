@@ -65,6 +65,18 @@ def _write_error(sha_dir: Path, req_type: str, error: str, detail: str = "") -> 
         pass
 
 
+def _source_code_changed(start_time: float) -> bool:
+    """Check if any source file in this package is newer than worker start."""
+    src_dir = Path(__file__).parent
+    for f in src_dir.glob("*.py"):
+        try:
+            if f.stat().st_mtime > start_time:
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def _heartbeat_thread(sha_dir: Path, stop_event: threading.Event) -> None:
     """Background thread that writes heartbeat every 2s using global phase."""
     global _current_phase, _current_request
