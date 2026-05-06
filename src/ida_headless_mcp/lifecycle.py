@@ -25,7 +25,6 @@ from typing import Any
 __all__ = ["BinaryState", "BinaryLifecycle", "LifecycleManager"]
 
 ARBITER_TICK = 2.0       # seconds between supervisor ticks
-SPAWN_STAGGER = 0.5      # minimum seconds between spawns (bootstrap is ~0.3s)
 
 
 class BinaryState(enum.IntEnum):
@@ -93,7 +92,6 @@ class LifecycleManager:
         self._lifecycles: dict[str, BinaryLifecycle] = {}
         self._worker_procs: dict[str, subprocess.Popen] = {}
         self._worker_activity: dict[str, float] = {}
-        self._last_spawn_time: float = 0.0
         # Arbiter state
         self._arbiter_started = False
         self._arbiter_lock = threading.Lock()
@@ -182,11 +180,6 @@ class LifecycleManager:
                 self._evict_worker(lru_sha)
                 alive_count -= 1
 
-            # Stagger check
-            since_last = time.monotonic() - self._last_spawn_time
-            if since_last < SPAWN_STAGGER:
-                time.sleep(SPAWN_STAGGER - since_last)
-
             if self._do_spawn(lc):
                 alive_count += 1
 
@@ -248,7 +241,6 @@ class LifecycleManager:
             )
             self._worker_procs[lc.sha256] = proc
             self._worker_activity[lc.sha256] = time.monotonic()
-            self._last_spawn_time = time.monotonic()
             lc.decompile_worker_pid = proc.pid
             self._save(lc)
             return True
