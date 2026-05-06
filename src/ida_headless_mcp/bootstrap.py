@@ -98,13 +98,14 @@ def bootstrap_ida(settings: Settings) -> ModuleType:
         FileNotFoundError: If the IDA install is missing required files.
         RuntimeError: If pip install or activation steps fail.
     """
-    _ensure_ida_install(settings)
+    # Fast path: if ida is already installed and activated, skip everything
     os.environ.setdefault("IDADIR", str(settings.ida_dir))
-
-    # Fast path: if ida is already installed and activated, skip pip/activation
     bin_link = _ida_pkg_dir() / "bin"
     if importlib.util.find_spec("ida") is not None and (bin_link.exists() or bin_link.is_symlink()):
         return importlib.import_module("ida")
+
+    # Slow path: verify IDA install, pip install package, create junction
+    _ensure_ida_install(settings)
 
     _install_local_ida_package(settings)
     _activate_idalib(settings)
