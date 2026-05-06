@@ -1270,62 +1270,231 @@ class IDABinarySessionManager:
 
     @requires(BinaryState.ACTIVE)
     def detect_stack_strings(self, binary_id: str, address_or_name: str) -> dict:
-        """Detect strings constructed on the stack (hidden from static string scan)."""
+        """Detect strings constructed on the stack at runtime.
+
+        Reconstructs strings written byte/word/dword/qword at a time to stack
+        frame slots. Uses the destination displacement (not instruction order)
+        to place bytes in a virtual stack buffer keyed by ``(base_reg, offset)``,
+        then extracts maximal runs of printable ASCII (and UTF-16LE) of length
+        >= 4 -- the same threshold FLOSS uses for its mov heuristic.
+
+        Handles patterns produced by:
+            * MSVC-style byte stores: ``mov byte ptr [rbp-X], 'c'``
+            * Clang -O1 packed stores: ``mov qword ptr [rbp-X], <imm64>``
+            * lea + mov forwarding: ``lea rax, [rbp-X]; mov [rax+N], imm``
+
+        Args:
+            binary_id: Opaque binary handle.
+            address_or_name: Function address (``0x...``) or name to scan.
+
+        Returns:
+            Mapping with ``binary_id``, ``function``, ``stack_strings_found``
+            count, and a ``strings`` list of ``{string, address, stack_offset,
+            length, encoding}`` entries sorted by source instruction address.
+        """
         import ida_funcs
+        import ida_idp
         import ida_ua
+        import idautils
 
         ea = _resolve_address(address_or_name)
         func = ida_funcs.get_func(ea)
         if func is None:
             raise ValueError(f"No function at {address_or_name!r}")
 
-        # Scan for consecutive byte stores to stack (mov [rbp-N], imm8)
-        strings_found: list[dict] = []
-        current_chars: list[int] = []
-        current_start = 0
+        STACK_REGS = {"rsp", "rbp", "esp", "ebp", "sp", "bp"}
+        SIGN_MASK_64 = 1 << 63
+        SIGN_WRAP_64 = 1 << 64
 
-        for head in __import__("idautils").Heads(func.start_ea, func.end_ea):
+        def _signed(val: int) -> int:
+            """Two's-complement sign-extend a 64-bit displacement."""
+            return val - SIGN_WRAP_64 if val & SIGN_MASK_64 else val
+
+        def _reg_canonical(reg_idx: int) -> str:
+            """Pick the widest valid name for a register index."""
+            for sz in (8, 4, 2, 1):
+                name = ida_idp.get_reg_name(reg_idx, sz)
+                if name:
+                    return name.lower()
+            return ""
+
+        width_for_dtype = {
+            ida_ua.dt_byte: 1,
+            ida_ua.dt_word: 2,
+            ida_ua.dt_dword: 4,
+            ida_ua.dt_qword: 8,
+        }
+        mask_for_dtype = {
+            ida_ua.dt_byte: 0xFF,
+            ida_ua.dt_word: 0xFFFF,
+            ida_ua.dt_dword: 0xFFFFFFFF,
+            ida_ua.dt_qword: (1 << 64) - 1,
+        }
+
+        # Mnemonics whose op0=reg writes to the destination register.  Used to
+        # invalidate stale ``lea`` aliases when the alias register is reloaded.
+        REG_CLOBBER_MNEMS = {
+            "mov", "movsx", "movzx", "movsxd", "lea", "xor", "and", "or",
+            "add", "sub", "shl", "shr", "sar", "rol", "ror", "imul", "mul",
+            "neg", "not", "inc", "dec", "pop", "xchg", "bswap", "lzcnt",
+            "tzcnt", "popcnt", "cmove", "cmovne", "cmovz", "cmovnz",
+            "cmovl", "cmovle", "cmovg", "cmovge", "cmova", "cmovae",
+            "cmovb", "cmovbe", "cmovs", "cmovns",
+        }
+
+        # Virtual stack buffer: (base_reg, signed_offset) -> (byte, source_ea).
+        # Last write wins -- mirrors real CPU semantics for overlapping stores.
+        buffer: dict[tuple[str, int], tuple[int, int]] = {}
+
+        # Aliases established by ``lea reg, [stack_reg + disp]``.
+        aliases: dict[str, tuple[str, int]] = {}
+
+        for head in idautils.Heads(func.start_ea, func.end_ea):
             insn = ida_ua.insn_t()
             if ida_ua.decode_insn(insn, head) <= 0:
                 continue
-            # Check for mov [stack], immediate byte value
-            if (insn.ops[0].type in (3, 4)  # o_displ, o_phrase (stack ref)
-                    and insn.ops[1].type == 5  # o_imm
-                    and 0x20 <= (insn.ops[1].value & 0xFF) <= 0x7E):  # printable ASCII
-                if not current_chars:
-                    current_start = head
-                current_chars.append(insn.ops[1].value & 0xFF)
-            else:
-                # Also check for mov [stack], dword with ASCII bytes
-                if (insn.ops[0].type in (3, 4) and insn.ops[1].type == 5):
-                    val = insn.ops[1].value
-                    # Check if all 4 bytes are printable ASCII
-                    b = val.to_bytes(4, "little") if val < 0x100000000 else b""
-                    if b and all(0x20 <= c <= 0x7E for c in b if c != 0):
-                        chars = [c for c in b if c != 0]
-                        if chars:
-                            if not current_chars:
-                                current_start = head
-                            current_chars.extend(chars)
-                            continue
-                # End of sequence
-                if len(current_chars) >= 4:
-                    s = bytes(current_chars).decode("ascii", errors="replace")
-                    strings_found.append({
-                        "string": s,
-                        "address": f"0x{current_start:x}",
-                        "length": len(s),
-                    })
-                current_chars = []
 
-        # Flush last sequence
-        if len(current_chars) >= 4:
-            s = bytes(current_chars).decode("ascii", errors="replace")
-            strings_found.append({
-                "string": s,
-                "address": f"0x{current_start:x}",
-                "length": len(s),
-            })
+            mnem = (ida_ua.ua_mnem(head) or "").lower()
+            dst = insn.ops[0]
+            src = insn.ops[1]
+
+            # Establish/refresh stack alias from a ``lea``.
+            if (
+                mnem == "lea"
+                and dst.type == ida_ua.o_reg
+                and src.type in (ida_ua.o_displ, ida_ua.o_phrase)
+            ):
+                dst_name = _reg_canonical(dst.reg)
+                if dst_name:
+                    aliases.pop(dst_name, None)
+                    src_base = _reg_canonical(src.reg)
+                    if src_base in STACK_REGS:
+                        src_disp = (
+                            _signed(src.addr) if src.type == ida_ua.o_displ else 0
+                        )
+                        aliases[dst_name] = (src_base, src_disp)
+                continue
+
+            # Any other reg-destination instruction kills a tracked alias.
+            if (
+                mnem in REG_CLOBBER_MNEMS
+                and dst.type == ida_ua.o_reg
+            ):
+                clobbered = _reg_canonical(dst.reg)
+                if clobbered:
+                    aliases.pop(clobbered, None)
+            elif mnem == "call":
+                # Calls clobber volatile regs; flush all aliases conservatively.
+                aliases.clear()
+
+            if mnem != "mov":
+                continue
+            if dst.type not in (ida_ua.o_displ, ida_ua.o_phrase):
+                continue
+            if src.type != ida_ua.o_imm:
+                continue
+            if dst.dtype not in width_for_dtype:
+                continue
+
+            base_name = _reg_canonical(dst.reg)
+            disp = _signed(dst.addr) if dst.type == ida_ua.o_displ else 0
+
+            if base_name in STACK_REGS:
+                stack_base, stack_offset = base_name, disp
+            elif base_name in aliases:
+                alias_base, alias_off = aliases[base_name]
+                stack_base, stack_offset = alias_base, alias_off + disp
+            else:
+                continue
+
+            width = width_for_dtype[dst.dtype]
+            value = src.value & mask_for_dtype[dst.dtype]
+            try:
+                raw = value.to_bytes(width, "little")
+            except OverflowError:
+                continue
+
+            for i, byte in enumerate(raw):
+                buffer[(stack_base, stack_offset + i)] = (byte, head)
+
+        # Group buffer entries by stack base so each frame slot is scanned in
+        # offset order, independent of the instruction order that wrote them.
+        grouped: dict[str, dict[int, tuple[int, int]]] = {}
+        for (base, off), (byte, src_ea) in buffer.items():
+            grouped.setdefault(base, {})[off] = (byte, src_ea)
+
+        strings_found: list[dict] = []
+        seen: set[tuple[str, int, str]] = set()
+
+        for base, slots in grouped.items():
+            offsets = sorted(slots.keys())
+            if not offsets:
+                continue
+
+            # ASCII pass: maximal runs of consecutive printable bytes.
+            i = 0
+            while i < len(offsets):
+                start_i = i
+                run_offset = offsets[i]
+                run_bytes: list[int] = []
+                run_ea = slots[run_offset][1]
+                prev_off = run_offset - 1
+                while i < len(offsets):
+                    off = offsets[i]
+                    byte, _ea = slots[off]
+                    if off != prev_off + 1 or not (0x20 <= byte <= 0x7E):
+                        break
+                    run_bytes.append(byte)
+                    prev_off = off
+                    i += 1
+                if len(run_bytes) >= 4:
+                    key = (base, run_offset, "ascii")
+                    if key not in seen:
+                        seen.add(key)
+                        strings_found.append({
+                            "string": "".join(chr(b) for b in run_bytes),
+                            "address": f"0x{run_ea:x}",
+                            "stack_offset": run_offset,
+                            "length": len(run_bytes),
+                            "encoding": "ascii",
+                        })
+                if i == start_i:
+                    i += 1
+
+            # UTF-16LE pass: pairs of (printable_low, 0x00) for >= 4 chars.
+            i = 0
+            while i < len(offsets):
+                start_i = i
+                start_off = offsets[i]
+                chars: list[int] = []
+                char_ea = slots[start_off][1]
+                cur = start_off
+                while cur in slots and (cur + 1) in slots:
+                    lo, ea_lo = slots[cur]
+                    hi, _ea_hi = slots[cur + 1]
+                    if hi != 0 or not (0x20 <= lo <= 0x7E):
+                        break
+                    if not chars:
+                        char_ea = ea_lo
+                    chars.append(lo)
+                    cur += 2
+                if len(chars) >= 4:
+                    key = (base, start_off, "utf16le")
+                    if key not in seen:
+                        seen.add(key)
+                        strings_found.append({
+                            "string": "".join(chr(c) for c in chars),
+                            "address": f"0x{char_ea:x}",
+                            "stack_offset": start_off,
+                            "length": len(chars),
+                            "encoding": "utf16le",
+                        })
+                    while i < len(offsets) and offsets[i] < cur:
+                        i += 1
+                if i == start_i:
+                    i += 1
+
+        strings_found.sort(key=lambda s: (int(s["address"], 16), s["encoding"]))
 
         return {
             "binary_id": binary_id,
@@ -1672,22 +1841,19 @@ class IDABinarySessionManager:
             seg = ida_segment.get_next_seg(seg.start_ea)
 
         idx = self._indices.get(binary_id)
-        func_entries = []
+        func_entries: list[dict[str, Any]] = []
         if idx:
             func_entries = [
-                {"address": f"0x{e.address:x}", "name": e.name}
+                {
+                    "address": f"0x{e.address:x}",
+                    "name": e.name,
+                    "callees": list(e.callees),
+                }
                 for e in idx.entries
             ]
-        result = recover_class_hierarchy(vtables[:100], func_entries)
-        result["binary_id"] = binary_id
-        result["constructors_found"] = constructors[:50]
-        return result
-
-        func_entries = [
-            {"address": f"0x{e.address:x}", "name": e.name}
-            for e in idx.entries
-        ]
-        result = recover_class_hierarchy(vtables[:100], func_entries)
+        result = recover_class_hierarchy(
+            vtables[:100], func_entries, constructors=constructors,
+        )
         result["binary_id"] = binary_id
         result["constructors_found"] = constructors[:50]
         return result

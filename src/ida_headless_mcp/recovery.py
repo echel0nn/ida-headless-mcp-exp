@@ -99,29 +99,52 @@ def recover_cfg(
 def recover_class_hierarchy(
     vtable_candidates: list[dict[str, Any]],
     function_index: list[dict[str, Any]],
+    constructors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Recover C++ class hierarchy from vtable analysis.
 
-    Algorithm:
-    1. Identify vtables (arrays of function pointers in .rdata)
-    2. Find constructors (functions that write vtable ptr to this+0)
-    3. Determine inheritance (multiple vtable writes in constructors)
-    4. Group methods by vtable membership
+    Uses the HexRaysPyTools constructor-store algorithm. Vtable-entry
+    set comparison cannot infer inheritance: when a derived class
+    overrides a virtual method, the slot holds a different function
+    pointer, so the base vtable is *not* a subset of the derived vtable.
+    Instead, observe how constructors install vtables.
+
+    Two signals contribute edges:
+
+    1. Multi-vtable constructor. A derived constructor often runs the
+       base initializer first (inlined or called), which writes the
+       base vtable into ``this``. The derived constructor then
+       overwrites it with the derived vtable. Sorting the writes by
+       instruction order yields ``base -> derived``.
+    2. Constructor chain. If constructor ``A`` calls constructor
+       ``B`` and each writes a distinct vtable, ``B``'s vtable is the
+       base of ``A``'s.
 
     Args:
-        vtable_candidates: List of {address, entries: [func_addrs]} from data scan.
-        function_index: Function index entries with callers/callees.
+        vtable_candidates: ``[{address, entries: [func_addrs]}]`` from
+            the data-section scan.
+        function_index: Function index entries, each containing
+            ``address``, ``name`` and (optionally) ``callees`` (a list
+            of callee names). Used to walk the constructor call graph.
+        constructors: ``[{constructor, vtable, xref_from}]`` recorded
+            by the worker for every xref to a vtable. ``xref_from`` is
+            the instruction address of the store, used to order writes
+            within a single constructor.
 
     Returns:
-        Dict with classes, hierarchy, and method assignments.
+        Dict with classes, hierarchy edges, and inheritance depth.
     """
     classes: list[dict[str, Any]] = []
     hierarchy_edges: list[dict[str, str]] = []
 
-    # Build a map of function address → name
+    # Build a map of function address -> name
     func_map: dict[str, str] = {}
     for f in function_index:
         func_map[f.get("address", "")] = f.get("name", "")
+
+    # Map vtable address -> class_id so constructor analysis can emit
+    # edges in the class-id namespace.
+    vtable_to_class: dict[str, str] = {}
 
     for i, vtable in enumerate(vtable_candidates):
         vtable_addr = vtable.get("address", f"vtable_{i}")
@@ -140,22 +163,12 @@ def recover_class_hierarchy(
             "virtual_methods": virtual_methods[:20],
         }
         classes.append(class_info)
+        vtable_to_class[vtable_addr] = f"class_{i}"
 
-    # Detect inheritance: if vtable_A's methods are a prefix of vtable_B's
-    for i, cls_a in enumerate(classes):
-        for j, cls_b in enumerate(classes):
-            if i == j:
-                continue
-            methods_a = set(vtable_candidates[i].get("entries", []))
-            methods_b = set(vtable_candidates[j].get("entries", []))
-            # If A's methods are a subset of B's, A might be base of B
-            if methods_a and methods_a < methods_b:
-                hierarchy_edges.append({
-                    "base": cls_a["class_id"],
-                    "derived": cls_b["class_id"],
-                    "confidence": "medium",
-                    "reason": "Base vtable methods are subset of derived.",
-                })
+    if constructors:
+        hierarchy_edges = _detect_inheritance_from_constructors(
+            constructors, function_index, vtable_to_class,
+        )
 
     return {
         "classes_found": len(classes),
@@ -244,6 +257,109 @@ def detect_protocol_state_machine(
 
 
 # ---- Internal helpers ----
+
+
+def _detect_inheritance_from_constructors(
+    constructors: list[dict[str, Any]],
+    function_index: list[dict[str, Any]],
+    vtable_to_class: dict[str, str],
+) -> list[dict[str, str]]:
+    """Emit base/derived edges from constructor vtable-store evidence.
+
+    Args:
+        constructors: ``[{constructor, vtable, xref_from}]`` records.
+        function_index: Function index entries with optional ``callees``.
+        vtable_to_class: Mapping from vtable address to class id.
+
+    Returns:
+        Deduplicated list of ``{base, derived, confidence, reason}`` edges.
+    """
+    edges: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def emit(base_vt: str, derived_vt: str, reason: str, confidence: str) -> None:
+        base_id = vtable_to_class.get(base_vt)
+        derived_id = vtable_to_class.get(derived_vt)
+        if not base_id or not derived_id or base_id == derived_id:
+            return
+        key = (base_id, derived_id)
+        if key in seen:
+            return
+        seen.add(key)
+        edges.append({
+            "base": base_id,
+            "derived": derived_id,
+            "confidence": confidence,
+            "reason": reason,
+        })
+
+    # Group every vtable store by the constructor that performs it.
+    ctor_to_stores: dict[str, list[dict[str, Any]]] = {}
+    for c in constructors:
+        cname = c.get("constructor") or ""
+        vt = c.get("vtable") or ""
+        if not cname or not vt:
+            continue
+        ctor_to_stores.setdefault(cname, []).append(c)
+
+    # Signal 1: a single constructor that stores multiple distinct vtables.
+    # Order the stores by instruction address so the first write -- which
+    # is the base initializer's write -- is treated as the base.
+    for stores in ctor_to_stores.values():
+        ordered = sorted(stores, key=lambda s: _parse_hex_addr(s.get("xref_from", "")))
+        seen_vts: list[str] = []
+        for s in ordered:
+            vt = s.get("vtable", "")
+            if vt and vt not in seen_vts:
+                seen_vts.append(vt)
+        for k in range(1, len(seen_vts)):
+            emit(
+                seen_vts[k - 1], seen_vts[k],
+                "Constructor stores base vtable then overwrites with derived vtable.",
+                "high",
+            )
+
+    # Signal 2: constructor A calls constructor B; B writes the base
+    # vtable, A writes the derived vtable. Match callees by name
+    # (case-insensitive) since IDA may normalize symbols differently.
+    name_to_callees: dict[str, set[str]] = {}
+    for f in function_index:
+        fname = f.get("name") or ""
+        if not fname:
+            continue
+        callees = f.get("callees") or ()
+        name_to_callees[fname.lower()] = {str(c).lower() for c in callees}
+
+    ctor_names_lower = {n.lower(): n for n in ctor_to_stores}
+    for caller_name, caller_stores in ctor_to_stores.items():
+        callees = name_to_callees.get(caller_name.lower())
+        if not callees:
+            continue
+        for callee_lower in callees:
+            callee_orig = ctor_names_lower.get(callee_lower)
+            if not callee_orig or callee_orig == caller_name:
+                continue
+            callee_stores = ctor_to_stores.get(callee_orig, [])
+            for caller_store in caller_stores:
+                for callee_store in callee_stores:
+                    emit(
+                        callee_store.get("vtable", ""),
+                        caller_store.get("vtable", ""),
+                        "Constructor calls a constructor that installs a different vtable.",
+                        "high",
+                    )
+
+    return edges
+
+
+def _parse_hex_addr(value: str) -> int:
+    """Parse a ``0x...`` or decimal address string. Returns 0 on failure."""
+    if not value:
+        return 0
+    try:
+        return int(value, 16) if value.lower().startswith("0x") else int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _find_dispatcher(pseudocode: str) -> dict[str, Any]:
