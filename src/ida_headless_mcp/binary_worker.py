@@ -104,9 +104,6 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     hb_thread.start()
 
     # Bootstrap IDA
-    import time as _time
-    _t0 = _time.perf_counter()
-    print(f'[worker] t=0ms: starting bootstrap', file=sys.stderr, flush=True)
     src_dir = Path(__file__).resolve().parent.parent
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
@@ -115,11 +112,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     from ida_headless_mcp.config import load_settings
 
     settings = load_settings()
-    _t1 = _time.perf_counter()
-    print(f'[worker] t={(_t1-_t0)*1000:.0f}ms: load_settings done, calling bootstrap_ida', file=sys.stderr, flush=True)
     ida_mod = bootstrap_ida(settings)
-    _t2 = _time.perf_counter()
-    print(f'[worker] t={(_t2-_t0)*1000:.0f}ms: bootstrap_ida done', file=sys.stderr, flush=True)
 
     try:
         ida_mod.enable_console_messages(False)
@@ -137,16 +130,12 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
 
     # Open database
     _current_phase = "loading_database"
-    _t3 = _time.perf_counter()
-    print(f"[worker] t={(_t3-_t0)*1000:.0f}ms: calling open_database", file=sys.stderr, flush=True)
     rc = ida_mod.open_database(str(binary_path), True)
     if rc != 0:
         _update_state(sha_dir, error=f"open_database failed with code {rc}")
         stop_heartbeat.set()
         sys.exit(1)
 
-    _t4 = _time.perf_counter()
-    print(f"[worker] t={(_t4-_t0)*1000:.0f}ms: open_database returned rc={rc}", file=sys.stderr, flush=True)
     import ida_funcs
     import ida_hexrays
 
@@ -156,9 +145,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     func_count = ida_funcs.get_func_qty()
     _update_state(sha_dir, state="ACTIVE", function_count=func_count,
                   worker_pid=__import__("os").getpid())
-
-    _t5 = _time.perf_counter()
-    print(f"[worker] t={(_t5-_t0)*1000:.0f}ms: hexrays init done, {func_count} functions", file=sys.stderr, flush=True)
+    print(f"[worker] ready: {func_count} functions", file=sys.stderr, flush=True)
     # Build index if not cached
     index_path = sha_dir / "index.json"
     if not index_path.exists():
@@ -262,8 +249,6 @@ def _dispatch_request(req, sha_dir, decompile_dir, patterns_dir, results_dir, ge
 
 def _handle_decompile(req, decompile_dir, current_gen):
     """Decompile one function, write to cache with generation stamp."""
-    _t4 = _time.perf_counter()
-    print(f"[worker] t={(_t4-_t0)*1000:.0f}ms: open_database returned rc={rc}", file=sys.stderr, flush=True)
     import ida_funcs
     import ida_hexrays
     import ida_name
