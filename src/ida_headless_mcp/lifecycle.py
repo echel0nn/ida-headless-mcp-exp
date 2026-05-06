@@ -317,9 +317,6 @@ class LifecycleManager:
             pp = env.get("PYTHONPATH", "")
             if src_dir not in pp:
                 env["PYTHONPATH"] = src_dir + (os.pathsep + pp if pp else "")
-            creationflags = 0
-            if os.name == "nt":
-                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
             proc = subprocess.Popen(
                 [
                     sys.executable, "-m", "ida_headless_mcp.binary_worker",
@@ -327,10 +324,9 @@ class LifecycleManager:
                     "--cache-dir", str(self.cache_dir),
                 ],
                 stdout=subprocess.DEVNULL,
-                stderr=stderr_fh,
+                stderr=subprocess.DEVNULL,
                 cwd=src_dir,
                 env=env,
-                creationflags=creationflags,
             )
             self._worker_procs[lc.sha256] = proc
             self._worker_activity[lc.sha256] = time.monotonic()
