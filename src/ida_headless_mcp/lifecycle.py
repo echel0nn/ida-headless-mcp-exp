@@ -125,7 +125,12 @@ class LifecycleManager:
             time.sleep(ARBITER_TICK)
 
     def _arbiter_tick(self) -> None:
-        """One supervisor cycle: reap, then spawn."""
+        """One supervisor cycle: reconcile, reap, spawn."""
+        # 0. Reconcile ANALYZING binaries — promote to READY when .i64 appears
+        for lc in list(self._lifecycles.values()):
+            if lc.state == BinaryState.ANALYZING:
+                self._reconcile(lc)
+
         # 1. Reap dead workers
         dead_shas = []
         for sha, proc in list(self._worker_procs.items()):
@@ -134,15 +139,14 @@ class LifecycleManager:
         for sha in dead_shas:
             del self._worker_procs[sha]
             self._worker_activity.pop(sha, None)
-            # Clean stale heartbeat
             hb = self.cache_dir / sha / "worker_heartbeat.json"
             if hb.exists():
                 try:
                     hb.unlink()
                 except OSError:
-                    pass  # Best-effort cleanup; stale heartbeat may already be gone or locked
+                    pass  # Best-effort cleanup
 
-        # 2. Find binaries that need workers (have pending queue items)
+        # 2. Find binaries that need workers (READY+ with pending queue)
         needs_worker: list[BinaryLifecycle] = []
         for lc in self._lifecycles.values():
             if lc.state < BinaryState.READY:
