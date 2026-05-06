@@ -570,7 +570,7 @@ class AnalysisMixin:
                 "format": rec.format,
                 "arch": rec.arch,
                 "bits": rec.bits,
-                "functions_total": rec.function_count,
+                "total_functions": rec.function_count,
                 "functions_user": len(user_funcs),
                 "functions_library": rec.function_count - len(user_funcs),
                 "mitigations": rec.mitigations,

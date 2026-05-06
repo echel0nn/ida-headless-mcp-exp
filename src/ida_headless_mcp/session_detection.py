@@ -864,8 +864,8 @@ class DetectionMixin:
         total = sum(len(v) for v in categories.values())
         return {
             "binary_id": binary_id,
-            "unique_strings_total": len(unique_strings),
-            "classified_total": total,
+            "total_unique_strings": len(unique_strings),
+            "total_classified": total,
             "categories": {k: v for k, v in categories.items() if v},
         }
 
