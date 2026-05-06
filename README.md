@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="assets/logo.png" alt="IDA Headless MCP" width="280"/>
+  <img src="assets/logo.png" alt="IDA Headless MCP" width="280"/><br/>
+  <sub>she has crippling depression from staring at OLLVM-flattened control flow graphs all day</sub>
 </p>
 
 <h1 align="center">IDA Headless MCP</h1>
