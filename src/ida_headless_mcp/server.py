@@ -90,6 +90,8 @@ class _Frontend:
                 result["heartbeat_age_s"] = age
                 result["worker_pid"] = hb.get("pid")
             except (ValueError, OSError):
+                # Best-effort heartbeat read for diagnostics; missing or corrupt
+                # heartbeat just leaves worker_phase/age/pid unset in the response.
                 pass
 
         # Build a human-readable message from best available info
@@ -355,6 +357,8 @@ def worker_status() -> dict:
                 os.kill(pid, 0)
                 process_alive = True
             except OSError:
+                # os.kill(pid, 0) raises OSError when the process is gone; that's
+                # exactly the signal we want — process_alive stays False.
                 pass
 
         # Compute definitive worker_status
@@ -390,6 +394,8 @@ def worker_status() -> dict:
                         "error": ed.get("error", "")[:100],
                     })
                 except (ValueError, OSError):
+                    # Skip a single corrupt or unreadable error file; recent_errors
+                    # collection continues with whatever else is present.
                     pass
         else:
             info["recent_errors"] = []
@@ -401,6 +407,8 @@ def worker_status() -> dict:
                 lines = log_file.read_text(encoding="utf-8", errors="replace").strip().splitlines()
                 info["recent_log"] = lines[-3:] if lines else []
             except OSError:
+                # Best-effort log read; if the log is locked/unreadable we just
+                # omit the recent_log field from the worker status.
                 pass
 
         workers.append(info)

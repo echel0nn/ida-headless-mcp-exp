@@ -61,7 +61,7 @@ def _write_error(sha_dir: Path, req_type: str, error: str, detail: str = "") -> 
     try:
         err_file.write_text(json.dumps(err, separators=(',', ':')), encoding="utf-8")
     except OSError:
-        pass
+        pass  # Error report write is best-effort; cannot recurse into _write_error if it itself fails
 
 
 
@@ -117,7 +117,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     try:
         ida_mod.enable_console_messages(False)
     except Exception:
-        pass
+        pass  # Optional API, not all IDA builds expose it
 
     # Clean stale locks
     for ext in ('.id0', '.id1', '.id2', '.nam', '.til'):
@@ -126,7 +126,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
             try:
                 stale.unlink()
             except OSError:
-                pass
+                pass  # Lock file may not exist or be held by another process
 
     # Open database
     _current_phase = "loading_database"
@@ -229,7 +229,7 @@ def _consume_queue(queue_path: Path, handler, sha_dir: Path) -> bool:
             try:
                 req_type = json.loads(line).get("type", "unknown")
             except (ValueError, AttributeError):
-                pass
+                pass  # Malformed line; fall back to "unknown" req_type for error report
             _write_error(sha_dir, req_type, str(exc), __import__('traceback').format_exc())
             print(f"[binary_worker] {req_type} FAILED: {exc}", file=sys.stderr, flush=True)
     return True
@@ -287,8 +287,8 @@ def _handle_decompile(req, decompile_dir, current_gen):
             name_file = decompile_dir / f"{name}.json"
             if not name_file.exists():
                 name_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[binary_worker] decompile failed at 0x{ea:x}: {exc}", file=sys.stderr, flush=True)
 
 
 def _handle_search_pattern(req, sha_dir, patterns_dir, current_gen):
@@ -438,7 +438,7 @@ def _build_session_stub(sha_dir: Path):
             _state = _json.loads(state_file.read_text(encoding="utf-8"))
             root_filename = _state.get("root_filename", "")
         except (ValueError, OSError):
-            pass
+            pass  # State file unreadable/malformed; proceed with empty root_filename
     binary_path = sha_dir / "workspace" / root_filename if root_filename else sha_dir / "workspace"
 
     # Build section list from IDA segments
@@ -460,7 +460,7 @@ def _build_session_stub(sha_dir: Path):
         import ida_entry
         mitigations["has_entry"] = ida_entry.get_entry_qty() > 0
     except ImportError:
-        pass
+        pass  # ida_entry not available in all IDA builds; mitigations stays empty
 
     mgr = IDABinarySessionManager.__new__(IDABinarySessionManager)
     mgr.settings = settings
@@ -544,7 +544,7 @@ def _update_state(sha_dir: Path, **updates: Any) -> None:
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            pass
+            pass  # State file unreadable/corrupt; updates will overwrite with fresh state
     state.update(updates)
     state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
@@ -564,7 +564,7 @@ def main() -> int:
     try:
         sys.stderr = open(log_file, "a", encoding="utf-8", buffering=1)  # line-buffered
     except OSError:
-        pass  # keep original stderr if log file fails
+        pass  # Log file unavailable; keep original stderr so worker can still report errors
 
     print(f"[worker] PID={__import__('os').getpid()} sha={args.sha256[:12]} starting", file=sys.stderr, flush=True)
 

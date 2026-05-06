@@ -26,8 +26,11 @@ def run_worker() -> None:
     # Redirect IDA noise to stderr so stdout stays clean for JSON-RPC
     try:
         mgr._ida.enable_console_messages(False)
-    except Exception:
-        pass
+    except (AttributeError, RuntimeError) as exc:
+        # Console redirect failed — IDA noise may now leak into stdout and
+        # corrupt JSON-RPC frames. Surface to stderr so the parent (lifecycle.py)
+        # captures it in the worker stderr log instead of going silent.
+        print(f"[worker] enable_console_messages failed: {exc}", file=sys.stderr, flush=True)
 
     # Signal ready
     _send({"jsonrpc": "2.0", "method": "worker/ready", "params": {"pid": __import__("os").getpid()}})

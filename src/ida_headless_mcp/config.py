@@ -78,6 +78,7 @@ def load_settings() -> Settings:
     Returns:
         A populated :class:`Settings` value with all directories materialised.
     """
+    # Default assumes standard Windows install; override via IDA_HEADLESS_MCP_IDA_DIR env var
     ida_dir = _env_path("IDA_HEADLESS_MCP_IDA_DIR", Path(r"C:/Program Files/IDA Professional 9.0"))
     project_dir = _env_path("IDA_HEADLESS_MCP_PROJECT_DIR", Path("projects"))
     cache_dir = _env_path("IDA_HEADLESS_MCP_CACHE_DIR", Path("cache"))
