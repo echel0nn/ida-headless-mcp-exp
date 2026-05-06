@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,14 +79,17 @@ class BinaryLifecycle:
 class LifecycleManager:
     """Manages binary lifecycles with persistent state and background analysis."""
 
-    def __init__(self, cache_dir: Path, ida_dir: Path, max_workers: int = 4) -> None:
+    def __init__(self, cache_dir: Path, ida_dir: Path, max_workers: int = 10) -> None:
         self.cache_dir = cache_dir
         self.ida_dir = ida_dir
         self.max_workers = max_workers
         self._lifecycles: dict[str, BinaryLifecycle] = {}
         self._worker_procs: dict[str, subprocess.Popen] = {}
         self._worker_activity: dict[str, float] = {}  # sha256 -> last activity time
-
+        # Sequential spawn queue — idalib crashes on concurrent cold starts
+        self._spawn_pending: set[str] = set()  # sha256s queued for spawn
+        self._spawn_lock = threading.Lock()
+        self._spawner_running = False
     # ------------------------------------------------------------------
     # State persistence
     # ------------------------------------------------------------------
@@ -266,52 +270,98 @@ class LifecycleManager:
     def _start_binary_worker(self, lc: BinaryLifecycle) -> str:
         """Spawn a binary_worker process for this binary.
 
-        Returns 'alive', 'spawned', 'respawned', or 'spawn_failed'.
-        Enforces max_workers limit via LRU eviction.
+        Returns 'alive', 'spawning', 'queued', or 'spawn_failed'.
+        Workers are spawned sequentially (idalib crashes on concurrent
+        cold starts) via a background thread.
         """
-        was_dead = not self._worker_is_alive(lc)
-        if not was_dead:
+        if self._worker_is_alive(lc):
             self._worker_activity[lc.sha256] = time.monotonic()
             return "alive"
 
-        # Enforce max_workers — evict LRU if at capacity
-        alive = {
-            sha: proc for sha, proc in self._worker_procs.items()
-            if proc.poll() is None
-        }
+        # Already in spawn queue?
+        if lc.sha256 in self._spawn_pending:
+            return "queued"
+
         # Clean up dead entries
         dead = [sha for sha, proc in self._worker_procs.items() if proc.poll() is not None]
         for sha in dead:
             del self._worker_procs[sha]
             self._worker_activity.pop(sha, None)
 
-        if len(alive) >= self.max_workers:
-            lru_sha = min(
-                alive.keys(),
-                key=lambda s: self._worker_activity.get(s, 0),
-            )
-            lru_proc = alive[lru_sha]
-            try:
-                lru_proc.terminate()
-                lru_proc.wait(timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                lru_proc.kill()
-            del self._worker_procs[lru_sha]
-            self._worker_activity.pop(lru_sha, None)
-            for evicted in self._lifecycles.values():
-                if evicted.sha256 == lru_sha:
-                    evicted.state = BinaryState.READY
-                    evicted.decompile_worker_pid = None
-                    self._save(evicted)
-                    break
+        # Add to spawn queue and kick the spawner thread
+        with self._spawn_lock:
+            self._spawn_pending.add(lc.sha256)
+            if not self._spawner_running:
+                self._spawner_running = True
+                t = threading.Thread(target=self._spawn_loop, daemon=True)
+                t.start()
+        return "spawning"
 
-        # Spawn new worker with stderr logged
+    def _spawn_loop(self) -> None:
+        """Background thread: spawn workers one at a time.
+
+        Waits for each worker's heartbeat to appear (proving bootstrap
+        completed) before spawning the next. This prevents the idalib
+        concurrent cold-start crash.
+        """
+        while True:
+            with self._spawn_lock:
+                if not self._spawn_pending:
+                    self._spawner_running = False
+                    return
+                sha = next(iter(self._spawn_pending))
+
+            # Find the lifecycle for this sha
+            lc = None
+            for candidate in self._lifecycles.values():
+                if candidate.sha256 == sha:
+                    lc = candidate
+                    break
+            if lc is None:
+                with self._spawn_lock:
+                    self._spawn_pending.discard(sha)
+                continue
+
+            # Skip if already alive (another call may have spawned it)
+            if self._worker_is_alive(lc):
+                with self._spawn_lock:
+                    self._spawn_pending.discard(sha)
+                continue
+
+            # Enforce max_workers
+            alive = {s: p for s, p in self._worker_procs.items() if p.poll() is None}
+            if len(alive) >= self.max_workers:
+                lru_sha = min(alive.keys(), key=lambda s: self._worker_activity.get(s, 0))
+                lru_proc = alive[lru_sha]
+                try:
+                    lru_proc.terminate()
+                    lru_proc.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    lru_proc.kill()
+                del self._worker_procs[lru_sha]
+                self._worker_activity.pop(lru_sha, None)
+                for evicted in self._lifecycles.values():
+                    if evicted.sha256 == lru_sha:
+                        evicted.state = BinaryState.READY
+                        evicted.decompile_worker_pid = None
+                        self._save(evicted)
+                        break
+
+            # Spawn the worker
+            ok = self._do_spawn(lc)
+            with self._spawn_lock:
+                self._spawn_pending.discard(sha)
+
+            if ok:
+                # Wait for heartbeat before spawning next worker.
+                # Serializes bootstrap; once done all run concurrently.
+                self._wait_for_heartbeat(lc.sha256, timeout=120)
+
+    def _do_spawn(self, lc: BinaryLifecycle) -> bool:
+        """Actually spawn one worker subprocess. Returns True on success."""
         log_dir = self.cache_dir / lc.sha256 / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "worker_stderr.log"
         try:
-            stderr_fh = open(log_file, "a", encoding="utf-8")
-            # Ensure the worker can find ida_headless_mcp package
             src_dir = str(Path(__file__).resolve().parent.parent)
             env = dict(os.environ)
             pp = env.get("PYTHONPATH", "")
@@ -332,13 +382,28 @@ class LifecycleManager:
             self._worker_activity[lc.sha256] = time.monotonic()
             lc.decompile_worker_pid = proc.pid
             self._save(lc)
-            return "respawned" if was_dead else "spawned"
-        except OSError as exc:
-            import traceback
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"\n[lifecycle] Failed to spawn worker: {exc}\n")
-                f.write(traceback.format_exc())
-            return "spawn_failed"
+            return True
+        except OSError:
+            return False
+
+    def _wait_for_heartbeat(self, sha256: str, timeout: float = 120) -> bool:
+        """Block until worker heartbeat shows bootstrap complete."""
+        hb_path = self.cache_dir / sha256 / "worker_heartbeat.json"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if hb_path.exists():
+                try:
+                    hb = json.loads(hb_path.read_text(encoding="utf-8"))
+                    phase = hb.get("status", "")
+                    if phase in ("idle", "ready") or phase.startswith("processing"):
+                        return True
+                except (json.JSONDecodeError, OSError):
+                    pass
+            proc = self._worker_procs.get(sha256)
+            if proc and proc.poll() is not None:
+                return False
+            time.sleep(1.0)
+        return False
 
     def check_workers(self) -> dict[str, str]:
         """Check worker health. Restart dead workers for READY+ binaries."""
