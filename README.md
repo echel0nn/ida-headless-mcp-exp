@@ -153,18 +153,38 @@ I'm not going to explain each one individually because we'd be here all day. Her
 
 ## Performance
 
-| What | How Fast |
-|---|---|
-| Cached result | <1ms |
-| Worker bootstrap | 0.3s |
-| SMT proof | 4-20ms |
-| CAPA 678 rules | <500ms |
-| Binary diff | <100ms |
-| Full decompile | 50-200ms |
-| Cold open (70KB) | ~6s |
-| Pattern search (3000 funcs) | ~60s |
+Real benchmarks on a Ryzen 9 5900X, Windows 11, IDA Pro 9.0. All times measured with `time.perf_counter()`.
 
-The SMT proofs are the showstopper. Other tools use Z3 and time out at 30 seconds. We use binbit and solve the same problem in 4 milliseconds. It's not even a competition.
+### Per-binary scaling
+
+| Binary | Size | Functions | Cold Analysis | Warm Open | Index Build | Decompile (largest) |
+|---|---|---|---|---|---|---|
+| ping.exe | 44 KB | 47 | ~3s | 208 ms | 176 ms | 14 ms |
+| whoami.exe | 96 KB | 242 | ~4s | 209 ms | 97 ms | 5 ms |
+| notepad.exe | 352 KB | 521 | ~6s | 219 ms | 243 ms | 6 ms |
+| cmd.exe | 332 KB | 793 | ~8s | 243 ms | 388 ms | 19 ms |
+| 7z.exe | 544 KB | 2639 | ~12s | 275 ms | 900 ms | 14 ms |
+| curl.exe | 656 KB | 1341 | ~14s | 254 ms | 862 ms | 1201 ms |
+| certutil.exe | 1.5 MB | 3678 | ~25s | 405 ms | 2.1 s | 1226 ms |
+| ntoskrnl.exe | 12.1 MB | 29328 | ~170s | 1542 ms | 18.8 s | 40 ms |
+
+### Tool-level timing
+
+| Operation | Typical | Notes |
+|---|---|---|
+| Cached result (any tool) | <1 ms | Filesystem read |
+| Worker bootstrap (idalib) | 90-170 ms | One-time per worker process |
+| Decompile (average function) | 1-15 ms | Varies by function complexity |
+| Decompile (monster function) | 200-1200 ms | curl's SSL handshake, certutil's ASN.1 parser |
+| SMT proof (binbit) | 4-20 ms | Integer overflow proof with witness |
+| CAPA scan (678 rules) | <500 ms | Index-based evaluation |
+| Crypto signature scan | 23-955 ms | Scales with binary data section size |
+| Binary diff (server-side) | <100 ms | Reads two cached indexes, pure Python |
+| Pattern search (full binary) | 30-90s | Decompiles all functions + regex check |
+
+### The binbit flex
+
+Other tools use Z3 for overflow proofs and time out at 30 seconds on real functions. We use binbit and solve the same problem in 4 milliseconds with a concrete witness value. It's not even a competition.
 
 ## What this is NOT
 
