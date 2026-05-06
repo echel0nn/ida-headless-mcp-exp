@@ -98,7 +98,7 @@ class _Frontend:
         action_messages = {
             "alive": "Worker is running. Result will be cached shortly.",
             "spawning": "Worker is starting. IDA bootstrap takes ~15s, then your request processes.",
-            "queued": "Worker is queued to start (sequential bootstrap). Will process shortly.",
+            "queued": "Worker queued. Arbiter spawns on next tick (~2s).",
             "spawn_failed": "CRITICAL: Worker failed to start. Check logs/ directory.",
             "not_ready": "Binary is still being analyzed by idat64. Poll with poll_analysis().",
         }
