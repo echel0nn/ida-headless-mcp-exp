@@ -107,7 +107,13 @@ def detect_crypto_primitives(
     if sig_path.exists():
         sigs = _json.loads(sig_path.read_text(encoding="utf-8"))
 
-    # Scan data sections against all signatures
+    # Scan data sections against all signatures.
+    # x86 binaries store dword constants little-endian, so a BE-form sig like
+    # SHA256_K's first word "428a2f98" appears in memory as bytes "98 2f 8a 42".
+    # We try both the original bytes and the dword-swapped form so byte-array
+    # sigs (AES S-box) and dword-array sigs (SHA-256 K) both match. The optional
+    # "endian" hint on a sig narrows the search to one form to cut false-positive
+    # surface; absent, both forms are tried.
     for addr, data in data_bytes:
         for sig in sigs:
             hex_str = sig["bytes"].replace(" ", "")[:32]
@@ -117,12 +123,24 @@ def detect_crypto_primitives(
                 pattern = bytes.fromhex(hex_str)
             except ValueError:
                 continue  # skip malformed signature
-            idx = data.find(pattern)
-            if idx >= 0:
+            endian = sig.get("endian")
+            if endian == "le":
+                candidates: tuple[bytes, ...] = (_dword_swap(pattern),)
+            elif endian == "be":
+                candidates = (pattern,)
+            else:
+                swapped = _dword_swap(pattern)
+                candidates = (pattern, swapped) if swapped != pattern else (pattern,)
+            matched_idx = -1
+            for candidate in candidates:
+                matched_idx = data.find(candidate)
+                if matched_idx >= 0:
+                    break
+            if matched_idx >= 0:
                 primitives.append({
                     "type": sig["name"],
                     "algorithm": sig["algo"],
-                    "address": f"0x{addr + idx:x}",
+                    "address": f"0x{addr + matched_idx:x}",
                     "confidence": "high",
                 })
                 break  # one match per data section per signature
@@ -206,6 +224,29 @@ def detect_crypto_primitives(
 
 
 # ---- Internal helpers ----
+
+
+def _dword_swap(data: bytes) -> bytes:
+    """Reverse byte order within each 4-byte group.
+
+    Used to convert a big-endian-form crypto signature into the form that
+    appears in memory on a little-endian (x86_64) target, where multi-word
+    constants like ``uint32_t SHA256_K[]`` are stored as LE dwords.
+
+    Args:
+        data: Source bytes. The final partial group (length < 4) is reversed
+            in place; for inputs that are a multiple of 4 bytes (the common
+            case for crypto-constant signatures) this is a clean dword swap.
+
+    Returns:
+        New bytes object with each 4-byte chunk byte-reversed.
+    """
+    result = bytearray(len(data))
+    for i in range(0, len(data), 4):
+        chunk = data[i:i + 4]
+        result[i:i + len(chunk)] = chunk[::-1]
+    return bytes(result)
+
 
 
 def _check_mba_density(microcode: str) -> dict[str, Any]:
