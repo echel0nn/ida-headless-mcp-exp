@@ -44,6 +44,7 @@ def prove_overflow(
             "feasible": False,
             "verdict": "not_applicable",
             "reason": "No sink found in assess_exploitability output.",
+            "proof_coverage": _empty_coverage(),
         }
 
     if not assess_result.get("has_multiplication"):
@@ -51,6 +52,7 @@ def prove_overflow(
             "feasible": False,
             "verdict": "no_multiplication",
             "reason": "Sink expression has no multiplication to overflow.",
+            "proof_coverage": _empty_coverage(),
         }
 
     sink_expr = assess_result.get("sink_expression", "")
@@ -64,10 +66,18 @@ def prove_overflow(
             "feasible": False,
             "verdict": "cannot_encode",
             "reason": f"Could not extract multiplication operands from: {sink_expr}",
+            "proof_coverage": _empty_coverage(gates_total=len(gates)),
         }
 
-    # Build SMT-LIB script
-    script = _build_overflow_script(mul_operands, gates, width)
+    # Build SMT-LIB script and capture gate-encoding coverage
+    script, gates_encoded, unsupported_nodes = _build_overflow_script(
+        mul_operands, gates, width,
+    )
+    proof_coverage = _build_proof_coverage(
+        gates_encoded=gates_encoded,
+        gates_total=len(gates),
+        unsupported_nodes=unsupported_nodes,
+    )
 
     # Solve
     result = solve_smtlib(script, timeout_ms=timeout_ms)
@@ -83,9 +93,10 @@ def prove_overflow(
             "witness": result["model"],
             "time_ms": result["time_ms"],
             "script_used": script,
+            "proof_coverage": proof_coverage,
         }
     elif result["result"] == "unsat":
-        return {
+        verdict_dict: dict[str, Any] = {
             "feasible": False,
             "verdict": "proven_defended",
             "reason": (
@@ -94,6 +105,9 @@ def prove_overflow(
             ),
             "time_ms": result["time_ms"],
         }
+        _apply_coverage_caveat(verdict_dict, proof_coverage)
+        verdict_dict["proof_coverage"] = proof_coverage
+        return verdict_dict
     else:
         return {
             "feasible": None,
@@ -101,6 +115,7 @@ def prove_overflow(
             "reason": f"Solver returned: {result['result']}",
             "time_ms": result["time_ms"],
             "raw": result.get("raw_output", ""),
+            "proof_coverage": proof_coverage,
         }
 
 
@@ -134,8 +149,21 @@ def _build_overflow_script(
     operands: list[str],
     gates: list[dict[str, str]],
     width: int,
-) -> str:
-    """Generate SMT-LIB script for overflow proof."""
+) -> tuple[str, int, list[str]]:
+    """Generate SMT-LIB script for overflow proof.
+
+    Args:
+        operands: Multiplication operands extracted from the sink.
+        gates: Validation gate descriptors with ``condition`` and
+            ``gate_type`` keys.
+        width: Bitvector width for declared variables.
+
+    Returns:
+        Tuple of ``(script, gates_encoded, unsupported_nodes)`` where
+        ``gates_encoded`` is the count of gates that produced a non-None
+        SMT term and ``unsupported_nodes`` lists every gate condition
+        string that ``_gate_to_smt`` could not encode.
+    """
     lines: list[str] = []
     lines.append("; Auto-generated overflow proof")
     lines.append(f"; Operands: {operands}")
@@ -160,6 +188,8 @@ def _build_overflow_script(
 
     # Gates represent conditions that DIVERT control flow (return/break).
     # At the sink, none of them fired, so their NEGATIONS hold.
+    gates_encoded = 0
+    unsupported_nodes: list[str] = []
     for gate in gates:
         gate_type = gate.get("gate_type", "")
         cond = gate.get("condition", "")
@@ -167,6 +197,9 @@ def _build_overflow_script(
         if smt_constraint:
             lines.append(f"; At sink, gate did NOT fire: NOT({cond[:40]})")
             lines.append(f"(assert (not {smt_constraint}))")
+            gates_encoded += 1
+        else:
+            unsupported_nodes.append(cond)
 
     # Default constraints: operands are positive (common for sizes)
     for op in operands:
@@ -196,7 +229,7 @@ def _build_overflow_script(
     if witness_vars:
         lines.append(f"(get-value ({witness_vars}))")
 
-    return "\n".join(lines)
+    return "\n".join(lines), gates_encoded, unsupported_nodes
 
 
 def _gate_to_smt(
@@ -605,7 +638,11 @@ def prove_bounds_sufficient(
         Dict with sufficient (bool) — True means gates prevent ALL bad inputs.
     """
     if not assess_result.get("sink_found"):
-        return {"sufficient": None, "verdict": "not_applicable"}
+        return {
+            "sufficient": None,
+            "verdict": "not_applicable",
+            "proof_coverage": _empty_coverage(),
+        }
 
     gates = assess_result.get("validation_gates", [])
     if not gates:
@@ -613,6 +650,7 @@ def prove_bounds_sufficient(
             "sufficient": False,
             "verdict": "no_gates",
             "reason": "No validation gates found — input is unchecked.",
+            "proof_coverage": _empty_coverage(),
         }
 
     sink_expr = assess_result.get("sink_expression", "")
@@ -628,7 +666,12 @@ def prove_bounds_sufficient(
             all_vars.add(m.group(1))
 
     if not all_vars:
-        return {"sufficient": None, "verdict": "cannot_encode", "reason": "No variables found."}
+        return {
+            "sufficient": None,
+            "verdict": "cannot_encode",
+            "reason": "No variables found.",
+            "proof_coverage": _empty_coverage(gates_total=len(gates)),
+        }
 
     # Build script: declare vars, assert all gates, ask if bad condition possible
     lines = ["; Bounds sufficiency proof"]
@@ -636,8 +679,9 @@ def prove_bounds_sufficient(
         lines.append(f"(declare-const {v} (_ BitVec {width}))")
     lines.append("")
 
-    # Assert all gates
+    # Assert all gates and track structural coverage
     gates_encoded = 0
+    unsupported_nodes: list[str] = []
     for gate in gates:
         cond = gate.get("condition", "")
         smt = _gate_to_smt(cond, gate.get("gate_type", ""), all_vars, width)
@@ -645,12 +689,22 @@ def prove_bounds_sufficient(
             lines.append(f"; Gate: {cond[:50]}")
             lines.append(f"(assert (not {smt}))")
             gates_encoded += 1
+        else:
+            unsupported_nodes.append(cond)
+
+    proof_coverage = _build_proof_coverage(
+        gates_encoded=gates_encoded,
+        gates_total=len(gates),
+        unsupported_nodes=unsupported_nodes,
+    )
 
     if gates_encoded == 0:
         return {
             "sufficient": None,
             "verdict": "cannot_encode",
             "reason": "Could not encode any gates as SMT constraints.",
+            "gates_encoded": gates_encoded,
+            "proof_coverage": proof_coverage,
         }
 
     # Assert dangerous condition: size is negative or excessively large
@@ -679,13 +733,16 @@ def prove_bounds_sufficient(
     result = solve_smtlib(script, timeout_ms=timeout_ms)
 
     if result["result"] == "unsat":
-        return {
+        verdict_dict: dict[str, Any] = {
             "sufficient": True,
             "verdict": "proven_sufficient",
             "reason": "Gates prevent ALL dangerous values. Bounds are mathematically sufficient.",
             "gates_encoded": gates_encoded,
             "time_ms": result["time_ms"],
         }
+        _apply_coverage_caveat(verdict_dict, proof_coverage)
+        verdict_dict["proof_coverage"] = proof_coverage
+        return verdict_dict
     elif result["result"] == "sat":
         return {
             "sufficient": False,
@@ -694,6 +751,7 @@ def prove_bounds_sufficient(
             "witness": result["model"],
             "gates_encoded": gates_encoded,
             "time_ms": result["time_ms"],
+            "proof_coverage": proof_coverage,
         }
     else:
         return {
@@ -701,4 +759,70 @@ def prove_bounds_sufficient(
             "verdict": "inconclusive",
             "reason": f"Solver: {result['result']}",
             "time_ms": result["time_ms"],
+            "proof_coverage": proof_coverage,
         }
+
+
+
+def _build_proof_coverage(
+    *,
+    gates_encoded: int,
+    gates_total: int,
+    unsupported_nodes: list[str],
+) -> dict[str, Any]:
+    """Build the ``proof_coverage`` block returned with proof results.
+
+    Args:
+        gates_encoded: Gates that produced a non-None SMT constraint.
+        gates_total: Total number of gates passed to the encoder.
+        unsupported_nodes: Identifiers of gates/nodes that could not be
+            encoded structurally.
+
+    Returns:
+        Dict with ``gates_encoded``, ``gates_total``, integer
+        ``coverage_pct`` (100 when ``gates_total == 0``), and
+        ``unsupported_nodes``.
+    """
+    if gates_total <= 0:
+        coverage_pct = 100
+    else:
+        coverage_pct = int(100 * gates_encoded / gates_total)
+    return {
+        "gates_encoded": gates_encoded,
+        "gates_total": gates_total,
+        "coverage_pct": coverage_pct,
+        "unsupported_nodes": list(unsupported_nodes),
+    }
+
+
+def _empty_coverage(*, gates_total: int = 0) -> dict[str, Any]:
+    """Return a degenerate coverage block for early-exit proof paths."""
+    return _build_proof_coverage(
+        gates_encoded=0,
+        gates_total=gates_total,
+        unsupported_nodes=[],
+    )
+
+
+def _apply_coverage_caveat(
+    verdict_dict: dict[str, Any],
+    proof_coverage: dict[str, Any],
+) -> None:
+    """Downgrade a "safe" verdict when gate coverage is incomplete.
+
+    When ``coverage_pct < 100`` and the original verdict is one of the
+    "code is safe" outcomes (``proven_defended`` / ``proven_sufficient``
+    / ``proven_safe``), the verdict is rewritten to ``proven_with_caveats``
+    and a ``caveat`` field describing how many gates failed to encode is
+    inserted. Mutates ``verdict_dict`` in place.
+    """
+    if proof_coverage["coverage_pct"] >= 100:
+        return
+    safe_verdicts = {"proven_defended", "proven_sufficient", "proven_safe"}
+    if verdict_dict.get("verdict") not in safe_verdicts:
+        return
+    missing = proof_coverage["gates_total"] - proof_coverage["gates_encoded"]
+    verdict_dict["verdict"] = "proven_with_caveats"
+    verdict_dict["caveat"] = (
+        f"{missing} of {proof_coverage['gates_total']} gates could not be encoded"
+    )
