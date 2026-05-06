@@ -150,13 +150,17 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     index_path = sha_dir / "index.json"
     if not index_path.exists():
         _current_phase = "building_index"
+        print(f"[worker] building index for {func_count} functions...", file=sys.stderr, flush=True)
         from ida_headless_mcp.function_index import build_function_index
         index = build_function_index()
+        print(f"[worker] index built, saving...", file=sys.stderr, flush=True)
         index.save(index_path)
         _update_state(sha_dir, state="INDEXED", function_count=func_count)
+        print(f"[worker] index saved", file=sys.stderr, flush=True)
 
     # Main loop: process requests from queue
     _current_phase = "idle"
+    print(f"[worker] entering main loop", file=sys.stderr, flush=True)
     decompile_dir = sha_dir / "decompile"
     decompile_dir.mkdir(parents=True, exist_ok=True)
     results_dir = sha_dir / "results"
