@@ -311,6 +311,12 @@ class LifecycleManager:
         log_file = log_dir / "worker_stderr.log"
         try:
             stderr_fh = open(log_file, "a", encoding="utf-8")
+            # Ensure the worker can find ida_headless_mcp package
+            src_dir = str(Path(__file__).resolve().parent.parent)
+            env = dict(os.environ)
+            pp = env.get("PYTHONPATH", "")
+            if src_dir not in pp:
+                env["PYTHONPATH"] = src_dir + (os.pathsep + pp if pp else "")
             proc = subprocess.Popen(
                 [
                     sys.executable, "-m", "ida_headless_mcp.binary_worker",
@@ -319,6 +325,8 @@ class LifecycleManager:
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_fh,
+                cwd=src_dir,
+                env=env,
             )
             self._worker_procs[lc.sha256] = proc
             self._worker_activity[lc.sha256] = time.monotonic()
