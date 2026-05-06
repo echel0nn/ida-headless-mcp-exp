@@ -130,7 +130,9 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
 
     # Open database
     _current_phase = "loading_database"
+    print(f"[worker] calling open_database({binary_path})", file=sys.stderr, flush=True)
     rc = ida_mod.open_database(str(binary_path), True)
+    print(f"[worker] open_database returned rc={rc}", file=sys.stderr, flush=True)
     if rc != 0:
         _update_state(sha_dir, error=f"open_database failed with code {rc}")
         stop_heartbeat.set()
@@ -139,7 +141,9 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     import ida_funcs
     import ida_hexrays
 
+    print(f"[worker] calling init_hexrays_plugin", file=sys.stderr, flush=True)
     ida_hexrays.init_hexrays_plugin()
+    print(f"[worker] hexrays init done", file=sys.stderr, flush=True)
 
     # Update state to ACTIVE
     func_count = ida_funcs.get_func_qty()

@@ -231,17 +231,20 @@ class LifecycleManager:
             pp = env.get("PYTHONPATH", "")
             if src_dir not in pp:
                 env["PYTHONPATH"] = src_dir + (os.pathsep + pp if pp else "")
-            # Worker redirects sys.stderr to its own log file in main().
-            # We inherit the parent's stderr so pre-redirect crashes are visible.
-            # NEVER use DEVNULL — it hides C-level aborts.
-            # NEVER open a file handle here — rapid concurrent spawns on Windows
-            # race between Popen inheriting the fd and parent closing it.
+            # stdin=DEVNULL: workers must NOT inherit the MCP server's stdin.
+            # The MCP server reads JSON-RPC from stdin. If a child inherits it,
+            # idalib's init_library may read from it, stealing MCP messages or
+            # corrupting the stream. This was the root cause of workers dying
+            # silently after open_database — proven by concurrent idalib working
+            # fine when spawned from a standalone Python process (stdin=terminal)
+            # but crashing when spawned from the MCP server (stdin=JSON-RPC pipe).
             proc = subprocess.Popen(
                 [
                     sys.executable, "-m", "ida_headless_mcp.binary_worker",
                     "--sha256", lc.sha256,
                     "--cache-dir", str(self.cache_dir),
                 ],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 cwd=src_dir,
                 env=env,
@@ -396,7 +399,7 @@ class LifecycleManager:
         try:
             proc = subprocess.Popen(
                 [str(idat), "-A", "-B", str(workspace_binary)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
             )
             lc.state = BinaryState.ANALYZING
             lc.analyzer_pid = proc.pid
