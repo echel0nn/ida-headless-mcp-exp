@@ -21,13 +21,15 @@
     "name": "SHA256_K",
     "bytes": "428a2f9871374491b5c0fbcfe9b5dba5",
     "size": 256,
-    "algo": "SHA-256"
+    "algo": "SHA-256",
+    "endian": "le"
   },
   {
     "name": "SHA256_H0",
     "bytes": "6a09e667bb67ae853c6ef372a54ff53a",
     "size": 32,
-    "algo": "SHA-256"
+    "algo": "SHA-256",
+    "endian": "le"
   },
   {
     "name": "SHA1_H0",
@@ -45,13 +47,15 @@
     "name": "MD5_T",
     "bytes": "d76aa478e8c7b756242070dbc1bdceee",
     "size": 256,
-    "algo": "MD5"
+    "algo": "MD5",
+    "endian": "le"
   },
   {
     "name": "MD5_H0",
     "bytes": "67452301efcdab8998badcfe10325476",
     "size": 16,
-    "algo": "MD5"
+    "algo": "MD5",
+    "endian": "le"
   },
   {
     "name": "DES_IP",
@@ -75,13 +79,15 @@
     "name": "Blowfish_P",
     "bytes": "243f6a8885a308d313198a2e03707344",
     "size": 72,
-    "algo": "Blowfish"
+    "algo": "Blowfish",
+    "endian": "le"
   },
   {
     "name": "Blowfish_S0",
     "bytes": "d1310ba698dfb5ac2ffd72dbd01adfb7",
     "size": 4096,
-    "algo": "Blowfish"
+    "algo": "Blowfish",
+    "endian": "le"
   },
   {
     "name": "RC4_init",
@@ -93,19 +99,22 @@
     "name": "CRC32_table_std",
     "bytes": "0000000077073096ee0e612c990951ba",
     "size": 1024,
-    "algo": "CRC32"
+    "algo": "CRC32",
+    "endian": "le"
   },
   {
     "name": "CRC32_poly_EDB88320",
-    "bytes": "2083b8ed",
+    "bytes": "edb88320",
     "size": 4,
-    "algo": "CRC32"
+    "algo": "CRC32",
+    "endian": "le"
   },
   {
     "name": "CRC32_poly_04C11DB7",
-    "bytes": "b71dc104",
+    "bytes": "04c11db7",
     "size": 4,
-    "algo": "CRC32"
+    "algo": "CRC32",
+    "endian": "le"
   },
   {
     "name": "Camellia_SIGMA1",
@@ -135,13 +144,15 @@
     "name": "SEED_KC",
     "bytes": "9e3779b9",
     "size": 4,
-    "algo": "SEED"
+    "algo": "SEED",
+    "endian": "le"
   },
   {
     "name": "Serpent_phi",
     "bytes": "9e3779b9",
     "size": 4,
-    "algo": "Serpent"
+    "algo": "Serpent",
+    "endian": "le"
   },
   {
     "name": "TEA_delta",
