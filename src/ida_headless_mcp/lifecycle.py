@@ -298,12 +298,13 @@ class LifecycleManager:
         return "spawning"
 
     def _spawn_loop(self) -> None:
-        """Background thread: spawn workers one at a time.
+        """Background thread: spawn workers with staggered starts.
 
-        Waits for each worker's heartbeat to appear (proving bootstrap
-        completed) before spawning the next. This prevents the idalib
-        concurrent cold-start crash.
+        idalib crashes when multiple instances cold-start simultaneously
+        (DLL loading race). A 3s gap between spawns avoids the race
+        while keeping total startup fast (~3s × N instead of ~20s × N).
         """
+        first = True
         while True:
             with self._spawn_lock:
                 if not self._spawn_pending:
@@ -311,7 +312,11 @@ class LifecycleManager:
                     return
                 sha = next(iter(self._spawn_pending))
 
-            # Find the lifecycle for this sha
+            # Stagger: wait 3s between spawns (skip for the first one)
+            if not first:
+                time.sleep(3)
+            first = False
+
             lc = None
             for candidate in self._lifecycles.values():
                 if candidate.sha256 == sha:
@@ -322,7 +327,6 @@ class LifecycleManager:
                     self._spawn_pending.discard(sha)
                 continue
 
-            # Skip if already alive (another call may have spawned it)
             if self._worker_is_alive(lc):
                 with self._spawn_lock:
                     self._spawn_pending.discard(sha)
@@ -347,15 +351,9 @@ class LifecycleManager:
                         self._save(evicted)
                         break
 
-            # Spawn the worker
             ok = self._do_spawn(lc)
             with self._spawn_lock:
                 self._spawn_pending.discard(sha)
-
-            if ok:
-                # Wait for heartbeat before spawning next worker.
-                # Serializes bootstrap; once done all run concurrently.
-                self._wait_for_heartbeat(lc.sha256, timeout=120)
 
     def _do_spawn(self, lc: BinaryLifecycle) -> bool:
         """Actually spawn one worker subprocess. Returns True on success."""
@@ -385,25 +383,6 @@ class LifecycleManager:
             return True
         except OSError:
             return False
-
-    def _wait_for_heartbeat(self, sha256: str, timeout: float = 120) -> bool:
-        """Block until worker heartbeat shows bootstrap complete."""
-        hb_path = self.cache_dir / sha256 / "worker_heartbeat.json"
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if hb_path.exists():
-                try:
-                    hb = json.loads(hb_path.read_text(encoding="utf-8"))
-                    phase = hb.get("status", "")
-                    if phase in ("idle", "ready") or phase.startswith("processing"):
-                        return True
-                except (json.JSONDecodeError, OSError):
-                    pass
-            proc = self._worker_procs.get(sha256)
-            if proc and proc.poll() is not None:
-                return False
-            time.sleep(1.0)
-        return False
 
     def check_workers(self) -> dict[str, str]:
         """Check worker health. Restart dead workers for READY+ binaries."""
