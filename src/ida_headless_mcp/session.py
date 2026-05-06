@@ -1679,16 +1679,48 @@ class IDABinarySessionManager:
 
     @requires(BinaryState.INDEXED)
     def capa_scan(self, binary_id: str) -> dict:
-        """Evaluate 678 CAPA behavioral rules against the binary."""
+        """Evaluate 678 CAPA behavioral rules against the binary.
+
+        Library functions (CRT helpers, vendor SDKs, FLIRT-tagged code)
+        are excluded from rule evaluation so that imported behavior the
+        user did not author cannot trigger CAPA matches.
+
+        Args:
+            binary_id: Opaque handle from ``open_binary``.
+
+        Returns:
+            Dict with matched capabilities, ATT&CK mappings, and per
+            capability ``context`` records describing the triggering
+            functions (address, name, size, and up to 3 other callees).
+        """
         from .capa_rules import capa_scan
         idx = self._indices.get(binary_id)
         if not idx:
             return {"binary_id": binary_id, "matches": 0, "capabilities": []}
+        user_entries = [e for e in idx.entries if not e.is_library]
         entries = [
             {"name": e.name, "callees": list(e.callees), "string_refs": list(e.string_refs)}
-            for e in idx.entries
+            for e in user_entries
         ]
         result = capa_scan(entries)
+        by_name = {e.name: e for e in user_entries}
+        for cap in result.get("capabilities", []):
+            matched_apis = {a.lower() for a in cap.get("matched_apis", [])}
+            contexts: list[dict[str, Any]] = []
+            for fname in cap.get("functions", []):
+                entry = by_name.get(fname)
+                if entry is None:
+                    continue
+                other_callees = [
+                    c for c in entry.callees if c.lower() not in matched_apis
+                ][:3]
+                contexts.append({
+                    "address": f"0x{entry.address:x}",
+                    "name": entry.name,
+                    "size": entry.size_bytes,
+                    "other_callees": other_callees,
+                })
+            cap["context"] = contexts
         result["binary_id"] = binary_id
         return result
 

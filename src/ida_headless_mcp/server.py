@@ -635,6 +635,162 @@ def call_chain(binary_id: str, target_function: str, depth: int = 5, direction: 
     }
 
 
+@mcp.tool()
+def find_similar_functions(binary_id: str, address_or_name: str) -> dict:
+    """Find functions in the same binary sharing the target's structure_hash.
+
+    Server-side only — reads the cached function index, no worker needed.
+    Two functions with the same ``structure_hash`` have the same control-flow
+    shape and call signature, which usually indicates duplicated logic,
+    template instantiations, or shared library code.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Target function address (0x...) or name.
+
+    Returns:
+        Dict with the resolved ``target`` (name/address/hash), a ``similar``
+        list of peers (name/address/size/complexity), and a ``count``, or
+        a pending response when the index has not been built yet.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    index = fe.cache.get_index(sha)
+    if index is None:
+        lc = fe.lifecycle.get(binary_id)
+        return fe._pending(binary_id, lc)
+    entries = index if isinstance(index, list) else []
+    by_key: dict[str, dict] = {}
+    for e in entries:
+        name_key = e.get("name", "").lower()
+        addr_key = e.get("address", "").lower()
+        if name_key:
+            by_key[name_key] = e
+        if addr_key:
+            by_key[addr_key] = e
+    target_key = address_or_name.strip().lower()
+    target = by_key.get(target_key)
+    if target is None:
+        for name, entry in by_key.items():
+            if target_key and target_key in name:
+                target = entry
+                break
+    if target is None:
+        return {
+            "binary_id": binary_id,
+            "status": "error",
+            "message": f"Function not found: {address_or_name}",
+        }
+    target_hash = target.get("structure_hash", "")
+    target_addr = target.get("address")
+    similar: list[dict[str, Any]] = []
+    if target_hash:
+        for e in entries:
+            if e.get("address") == target_addr:
+                continue
+            if e.get("structure_hash", "") != target_hash:
+                continue
+            similar.append(
+                {
+                    "name": e.get("name"),
+                    "address": e.get("address"),
+                    "size": e.get("size_bytes", 0),
+                    "complexity": e.get("cyclomatic_complexity", 0),
+                }
+            )
+    return {
+        "binary_id": binary_id,
+        "target": {
+            "name": target.get("name"),
+            "address": target_addr,
+            "hash": target_hash,
+        },
+        "similar": similar,
+        "count": len(similar),
+        "status": "ready",
+    }
+
+
+@mcp.tool()
+def cross_binary_similarity(binary_id_a: str, binary_id_b: str) -> dict:
+    """Match functions across two binaries by ``structure_hash``.
+
+    Server-side only — reads both cached function indexes, no worker needed.
+    Trivial matches are suppressed: thunks and functions smaller than 16
+    bytes are dropped before pairing, and entries without a
+    ``structure_hash`` are ignored.
+
+    Args:
+        binary_id_a: Opaque handle for the first binary.
+        binary_id_b: Opaque handle for the second binary.
+
+    Returns:
+        Dict with a ``matches`` list of ``{hash, binary_a, binary_b}`` pairs
+        and ``total_matches``, or a pending/error response when an index is
+        unavailable.
+    """
+    fe = _fe()
+    for bid in (binary_id_a, binary_id_b):
+        try:
+            fe._sha(bid)
+        except KeyError:
+            return {"status": "error", "message": f"Unknown binary_id: {bid}"}
+        lc = fe.lifecycle.get(bid)
+        if lc and lc.state < BinaryState.READY:
+            return fe._pending(bid, lc)
+    sha_a = fe._sha(binary_id_a)
+    sha_b = fe._sha(binary_id_b)
+    idx_a = fe.cache.get_index(sha_a)
+    idx_b = fe.cache.get_index(sha_b)
+    if idx_a is None or idx_b is None:
+        return {
+            "status": "error",
+            "message": "Index not cached for one or both binaries.",
+        }
+
+    def _eligible(e: dict) -> bool:
+        if e.get("is_thunk"):
+            return False
+        if e.get("size_bytes", 0) < 16:
+            return False
+        return bool(e.get("structure_hash"))
+
+    by_hash_a: dict[str, list[dict]] = {}
+    for e in idx_a:
+        if not _eligible(e):
+            continue
+        by_hash_a.setdefault(e["structure_hash"], []).append(e)
+    matches: list[dict[str, Any]] = []
+    for e_b in idx_b:
+        if not _eligible(e_b):
+            continue
+        h = e_b["structure_hash"]
+        peers = by_hash_a.get(h)
+        if not peers:
+            continue
+        for e_a in peers:
+            matches.append(
+                {
+                    "hash": h,
+                    "binary_a": {
+                        "name": e_a.get("name"),
+                        "addr": e_a.get("address"),
+                    },
+                    "binary_b": {
+                        "name": e_b.get("name"),
+                        "addr": e_b.get("address"),
+                    },
+                }
+            )
+    return {
+        "binary_id_a": binary_id_a,
+        "binary_id_b": binary_id_b,
+        "matches": matches,
+        "total_matches": len(matches),
+        "status": "ready",
+    }
+
+
 # ======================================================================
 # TOOLS — IDA-dependent (cache or pending, worker does the heavy lifting)
 # ======================================================================

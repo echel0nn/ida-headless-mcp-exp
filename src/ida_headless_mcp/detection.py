@@ -124,12 +124,13 @@ def detect_crypto_primitives(
             except ValueError:
                 continue  # skip malformed signature
             endian = sig.get("endian")
+            word_size = sig.get("word_size", 4)
             if endian == "le":
-                candidates: tuple[bytes, ...] = (_dword_swap(pattern),)
+                candidates: tuple[bytes, ...] = (_endian_swap(pattern, word_size),)
             elif endian == "be":
                 candidates = (pattern,)
             else:
-                swapped = _dword_swap(pattern)
+                swapped = _endian_swap(pattern, word_size)
                 candidates = (pattern, swapped) if swapped != pattern else (pattern,)
             matched_idx = -1
             for candidate in candidates:
@@ -226,24 +227,32 @@ def detect_crypto_primitives(
 # ---- Internal helpers ----
 
 
-def _dword_swap(data: bytes) -> bytes:
-    """Reverse byte order within each 4-byte group.
+def _endian_swap(data: bytes, word_size: int = 4) -> bytes:
+    """Reverse byte order within each ``word_size``-byte group.
 
     Used to convert a big-endian-form crypto signature into the form that
     appears in memory on a little-endian (x86_64) target, where multi-word
-    constants like ``uint32_t SHA256_K[]`` are stored as LE dwords.
+    constants like ``uint32_t SHA256_K[]`` are stored as LE dwords and
+    ``uint64_t SHA512_K[]`` as LE qwords.
 
     Args:
-        data: Source bytes. The final partial group (length < 4) is reversed
-            in place; for inputs that are a multiple of 4 bytes (the common
-            case for crypto-constant signatures) this is a clean dword swap.
+        data: Source bytes. The final partial group (length < ``word_size``)
+            is reversed in place; for inputs whose length is a multiple of
+            ``word_size`` (the common case for crypto-constant signatures)
+            this is a clean per-word swap.
+        word_size: Group size in bytes. ``1`` returns ``data`` unchanged
+            (byte-array signatures need no swap); ``4`` performs a dword
+            swap; ``8`` performs a qword swap.
 
     Returns:
-        New bytes object with each 4-byte chunk byte-reversed.
+        New bytes object with each ``word_size``-byte chunk byte-reversed,
+        or ``data`` itself when ``word_size == 1``.
     """
+    if word_size <= 1:
+        return data
     result = bytearray(len(data))
-    for i in range(0, len(data), 4):
-        chunk = data[i:i + 4]
+    for i in range(0, len(data), word_size):
+        chunk = data[i:i + word_size]
         result[i:i + len(chunk)] = chunk[::-1]
     return bytes(result)
 

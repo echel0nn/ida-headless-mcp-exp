@@ -11,7 +11,12 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["expr_to_smt", "condition_to_smt", "SMTContext"]
+__all__ = [
+    "expr_to_smt",
+    "condition_to_smt",
+    "expr_to_smt_with_coverage",
+    "SMTContext",
+]
 
 
 class SMTContext:
@@ -35,12 +40,20 @@ class SMTContext:
         return "\n".join(lines)
 
 
-def expr_to_smt(expr: Any, ctx: SMTContext) -> str | None:
+def expr_to_smt(
+    expr: Any,
+    ctx: SMTContext,
+    _unsupported: list[str] | None = None,
+) -> str | None:
     """Convert a CTree expression node to an SMT-LIB bitvector term.
 
     Args:
         expr: A Hex-Rays cexpr_t node.
         ctx: SMT context for tracking variable declarations.
+        _unsupported: Optional list. When provided, every CTree op that
+            falls through to the free-variable fallback is appended as
+            ``cot_<op>``. Used by ``expr_to_smt_with_coverage``; callers
+            that ignore coverage may leave it as ``None``.
 
     Returns:
         SMT-LIB term string, or None if the expression can't be encoded.
@@ -72,16 +85,16 @@ def expr_to_smt(expr: Any, ctx: SMTContext) -> str | None:
 
     # Unary operations
     if op == ida_hexrays.cot_bnot:
-        inner = expr_to_smt(expr.x, ctx)
+        inner = expr_to_smt(expr.x, ctx, _unsupported)
         return f"(bvnot {inner})" if inner else None
 
     if op == ida_hexrays.cot_neg:
-        inner = expr_to_smt(expr.x, ctx)
+        inner = expr_to_smt(expr.x, ctx, _unsupported)
         return f"(bvneg {inner})" if inner else None
 
     if op == ida_hexrays.cot_lnot:
         # Logical not — returns bool, encode as bv == 0
-        inner = expr_to_smt(expr.x, ctx)
+        inner = expr_to_smt(expr.x, ctx, _unsupported)
         if inner:
             inner_w = _expr_width(expr.x)
             return f"(= {inner} (_ bv0 {inner_w}))"
@@ -89,7 +102,7 @@ def expr_to_smt(expr: Any, ctx: SMTContext) -> str | None:
 
     # Cast operations
     if op == ida_hexrays.cot_cast:
-        inner = expr_to_smt(expr.x, ctx)
+        inner = expr_to_smt(expr.x, ctx, _unsupported)
         if inner is None:
             return None
         src_width = _expr_width(expr.x)
@@ -124,8 +137,8 @@ def expr_to_smt(expr: Any, ctx: SMTContext) -> str | None:
     }
 
     if op in _binops:
-        left = expr_to_smt(expr.x, ctx)
-        right = expr_to_smt(expr.y, ctx)
+        left = expr_to_smt(expr.x, ctx, _unsupported)
+        right = expr_to_smt(expr.y, ctx, _unsupported)
         if left and right:
             return f"({_binops[op]} {left} {right})"
         return None
@@ -145,32 +158,32 @@ def expr_to_smt(expr: Any, ctx: SMTContext) -> str | None:
     }
 
     if op in _cmpops:
-        left = expr_to_smt(expr.x, ctx)
-        right = expr_to_smt(expr.y, ctx)
+        left = expr_to_smt(expr.x, ctx, _unsupported)
+        right = expr_to_smt(expr.y, ctx, _unsupported)
         if left and right:
             return f"({_cmpops[op]} {left} {right})"
         return None
 
     # Logical AND/OR (operate on booleans)
     if op == ida_hexrays.cot_land:
-        left = condition_to_smt(expr.x, ctx)
-        right = condition_to_smt(expr.y, ctx)
+        left = condition_to_smt(expr.x, ctx, _unsupported)
+        right = condition_to_smt(expr.y, ctx, _unsupported)
         if left and right:
             return f"(and {left} {right})"
         return None
 
     if op == ida_hexrays.cot_lor:
-        left = condition_to_smt(expr.x, ctx)
-        right = condition_to_smt(expr.y, ctx)
+        left = condition_to_smt(expr.x, ctx, _unsupported)
+        right = condition_to_smt(expr.y, ctx, _unsupported)
         if left and right:
             return f"(or {left} {right})"
         return None
 
     # Ternary (ITE)
     if op == ida_hexrays.cot_ternary:
-        cond = condition_to_smt(expr.x, ctx)
-        then_val = expr_to_smt(expr.y, ctx)
-        else_val = expr_to_smt(expr.z, ctx)
+        cond = condition_to_smt(expr.x, ctx, _unsupported)
+        then_val = expr_to_smt(expr.y, ctx, _unsupported)
+        else_val = expr_to_smt(expr.z, ctx, _unsupported)
         if cond and then_val and else_val:
             return f"(ite {cond} {then_val} {else_val})"
         return None
@@ -196,19 +209,31 @@ def expr_to_smt(expr: Any, ctx: SMTContext) -> str | None:
 
     # Assignment — return the RHS
     if op == ida_hexrays.cot_asg:
-        return expr_to_smt(expr.y, ctx)
+        return expr_to_smt(expr.y, ctx, _unsupported)
 
     # Fallback: unknown op → free variable
+    if _unsupported is not None:
+        _unsupported.append(f"cot_{op}")
     name = f"unk_{op}_{expr.ea & 0xFFFF:04x}"
     ctx.declare(name, width)
     return name
 
 
-def condition_to_smt(expr: Any, ctx: SMTContext) -> str | None:
+def condition_to_smt(
+    expr: Any,
+    ctx: SMTContext,
+    _unsupported: list[str] | None = None,
+) -> str | None:
     """Convert a CTree expression to an SMT-LIB boolean term.
 
     If the expression is already a comparison (returns bool), emit directly.
     Otherwise, emit `(distinct expr (_ bv0 W))` (non-zero = true).
+
+    Args:
+        expr: A Hex-Rays cexpr_t node.
+        ctx: SMT context for tracking variable declarations.
+        _unsupported: Optional list. Forwarded to ``expr_to_smt`` so that
+            unsupported CTree ops encountered during encoding are recorded.
     """
     import ida_hexrays
 
@@ -229,10 +254,10 @@ def condition_to_smt(expr: Any, ctx: SMTContext) -> str | None:
     }
 
     if op in bool_ops:
-        return expr_to_smt(expr, ctx)
+        return expr_to_smt(expr, ctx, _unsupported)
 
     # Non-boolean expression: treat as "!= 0"
-    inner = expr_to_smt(expr, ctx)
+    inner = expr_to_smt(expr, ctx, _unsupported)
     if inner:
         width = _expr_width(expr)
         return f"(distinct {inner} (_ bv0 {width}))"
@@ -256,3 +281,37 @@ def _is_signed_type(tinfo: Any) -> bool:
         return tinfo.is_signed()
     except (AttributeError, TypeError):
         return True  # default to signed for safety
+
+
+
+def expr_to_smt_with_coverage(
+    expr: Any,
+    ctx: SMTContext,
+) -> tuple[str | None, list[str]]:
+    """Encode an expression and report unsupported CTree node types.
+
+    Same encoding behaviour as :func:`expr_to_smt`, but also returns a
+    list of every CTree op that fell through to the free-variable
+    fallback. An empty list means full structural coverage.
+
+    Args:
+        expr: A Hex-Rays cexpr_t node.
+        ctx: SMT context for tracking variable declarations.
+
+    Returns:
+        Tuple of (smt_term_or_none, list_of_unsupported_node_types).
+        Each unsupported entry is formatted as ``cot_<op>``.
+    """
+    unsupported: list[str] = []
+    smt = expr_to_smt(expr, ctx, unsupported)
+    return smt, unsupported
+
+
+def condition_to_smt_with_coverage(
+    expr: Any,
+    ctx: SMTContext,
+) -> tuple[str | None, list[str]]:
+    """Boolean-coercing variant of :func:`expr_to_smt_with_coverage`."""
+    unsupported: list[str] = []
+    smt = condition_to_smt(expr, ctx, unsupported)
+    return smt, unsupported
