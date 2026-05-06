@@ -149,8 +149,14 @@ class LifecycleManager:
         for lc in self._lifecycles.values():
             if lc.state < BinaryState.READY:
                 continue
-            if lc.sha256 in self._worker_procs:
-                continue  # Already has a tracked worker
+            # Check if worker is ACTUALLY alive (not just tracked)
+            existing = self._worker_procs.get(lc.sha256)
+            if existing is not None:
+                if existing.poll() is None:
+                    continue  # Truly alive, skip
+                # Dead but tracked — clean up now
+                del self._worker_procs[lc.sha256]
+                self._worker_activity.pop(lc.sha256, None)
             # Check queue
             queue = self.cache_dir / lc.sha256 / "request_queue.jsonl"
             if queue.exists():
@@ -159,7 +165,7 @@ class LifecycleManager:
                     if text:
                         needs_worker.append(lc)
                 except OSError:
-                    pass  # Best-effort queue probe; transient I/O errors don't block scheduling
+                    pass  # Best-effort queue probe
 
         if not needs_worker:
             return
