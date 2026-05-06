@@ -127,7 +127,7 @@
   },
   {
     "name": "Twofish_MDS",
-    "bytes": "bcbc3275ecec21f3202043c6b1b1a",
+    "bytes": "bcbc3275ecec21f3202043c6b1b1a83e",
     "size": 1024,
     "algo": "Twofish"
   },
