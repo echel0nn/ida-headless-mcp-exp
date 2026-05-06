@@ -1,6 +1,6 @@
 # ida-headless-mcp
 
-Non-blocking binary analysis MCP server for IDA Pro 9.0. 59 tools. Multi-agent safe. No plugins required.
+Non-blocking binary analysis MCP server for IDA Pro 9.0. 65 tools. Multi-agent safe. No plugins required.
 
 ## Why This Exists
 

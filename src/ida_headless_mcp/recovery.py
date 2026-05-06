@@ -195,15 +195,68 @@ def detect_protocol_state_machine(
     """
     callees_lower = {c.lower() for c in callees}
 
-    # Network API detection
-    network_apis = {
+    # Network API detection -- partitioned by stack so we can classify
+    # the protocol_type and apply HTTP-specific handler heuristics.
+    raw_socket_apis = {
         "recv", "recvfrom", "wsarecv", "send", "sendto", "wsasend",
-        "winhttpreaddata", "winhttpsendrequest", "internetreadfile",
         "read", "write", "connect", "accept", "listen", "bind",
         "socket", "closesocket", "shutdown",
     }
+    winhttp_apis = {
+        "winhttpreaddata", "winhttpsendrequest", "winhttpreceiveresponse",
+        "winhttpopen", "winhttpconnect", "winhttpopenrequest",
+    }
+    wininet_apis = {
+        "internetreadfile", "internetreadfileex",
+        "httpsendrequesta", "httpsendrequestw",
+        "internetopena", "internetopenw",
+        "internetconnecta", "internetconnectw",
+        "httpopenrequesta", "httpopenrequestw",
+    }
+    urlmon_apis = {
+        "urldownloadtofilea", "urldownloadtofilew",
+    }
+    network_apis = raw_socket_apis | winhttp_apis | wininet_apis | urlmon_apis
     net_callees = callees_lower & network_apis
     has_network = bool(net_callees)
+
+    raw_hits = callees_lower & raw_socket_apis
+    winhttp_hits = callees_lower & winhttp_apis
+    wininet_hits = callees_lower & wininet_apis
+    urlmon_hits = callees_lower & urlmon_apis
+
+    types_present = [
+        name for name, hit in (
+            ("raw_socket", raw_hits),
+            ("winhttp", winhttp_hits),
+            ("wininet", wininet_hits),
+            ("urlmon", urlmon_hits),
+        ) if hit
+    ]
+    if not types_present:
+        protocol_type = "none"
+    elif len(types_present) > 1:
+        protocol_type = "mixed"
+    else:
+        protocol_type = types_present[0]
+
+    # HTTP operation classification -- open/connect/request/send/read.
+    http_open = (winhttp_hits & {"winhttpopen"}) | (wininet_hits & {"internetopena", "internetopenw"})
+    http_connect = (winhttp_hits & {"winhttpconnect"}) | (wininet_hits & {"internetconnecta", "internetconnectw"})
+    http_request = (winhttp_hits & {"winhttpopenrequest"}) | (wininet_hits & {"httpopenrequesta", "httpopenrequestw"})
+    http_send = (winhttp_hits & {"winhttpsendrequest"}) | (wininet_hits & {"httpsendrequesta", "httpsendrequestw"})
+    http_read = (
+        (winhttp_hits & {"winhttpreaddata", "winhttpreceiveresponse"})
+        | (wininet_hits & {"internetreadfile", "internetreadfileex"})
+    )
+    http_op_count = sum(1 for s in (http_open, http_connect, http_request, http_send, http_read) if s)
+    # URLMon's URLDownloadToFile collapses request+send+read into a single
+    # call, so its presence alone satisfies the >=2 ops threshold.
+    if urlmon_hits:
+        http_op_count = max(http_op_count, 3)
+
+    has_http_stack = bool(winhttp_hits or wininet_hits or urlmon_hits)
+    is_http_protocol = has_http_stack and http_op_count >= 2
 
     # Command dispatch pattern
     has_switch = "switch" in pseudocode or "case " in pseudocode
@@ -232,7 +285,11 @@ def detect_protocol_state_machine(
         ))
     ]
 
-    is_protocol = has_network and (has_switch or has_buffer_ops)
+    # Raw-socket handlers still require a switch/case dispatcher or buffer
+    # parsing to qualify; HTTP stacks qualify on call-sequence alone.
+    raw_is_protocol = bool(raw_hits) and (has_switch or has_buffer_ops)
+    is_protocol = raw_is_protocol or is_http_protocol
+
     if is_protocol and case_count >= 3:
         confidence = "high"
     elif is_protocol:
@@ -242,8 +299,19 @@ def detect_protocol_state_machine(
     else:
         confidence = "none"
 
+    recv_apis = {
+        "recv", "recvfrom", "wsarecv",
+        "winhttpreaddata", "winhttpreceiveresponse",
+        "internetreadfile", "internetreadfileex",
+    }
+    send_apis = {
+        "send", "sendto", "wsasend",
+        "winhttpsendrequest", "httpsendrequesta", "httpsendrequestw",
+    }
+
     return {
         "is_protocol_handler": is_protocol,
+        "protocol_type": protocol_type,
         "confidence": confidence,
         "network_apis": sorted(net_callees),
         "has_command_dispatch": has_switch and case_count >= 2,
@@ -251,8 +319,8 @@ def detect_protocol_state_machine(
         "state_variables": sorted(set(potential_state_vars))[:5],
         "has_buffer_parsing": has_buffer_ops,
         "protocol_strings": protocol_strings[:10],
-        "recv_present": bool(net_callees & {"recv", "recvfrom", "wsarecv", "winhttpreaddata", "internetreadfile"}),
-        "send_present": bool(net_callees & {"send", "sendto", "wsasend", "winhttpsendrequest"}),
+        "recv_present": bool(net_callees & recv_apis),
+        "send_present": bool(net_callees & send_apis),
     }
 
 
@@ -272,26 +340,44 @@ def _detect_inheritance_from_constructors(
         vtable_to_class: Mapping from vtable address to class id.
 
     Returns:
-        Deduplicated list of ``{base, derived, confidence, reason}`` edges.
+        Deduplicated list of ``{base, derived, confidence, signal, reason}``
+        edges. ``confidence`` is ``"high"`` when corroborated by the call
+        graph (or by both signals); ``"medium"`` when only the per-constructor
+        store order supports the edge. ``signal`` records which detector
+        produced the edge: ``"call_graph"``, ``"store_order"``, or ``"both"``
+        when both signals agree.
     """
-    edges: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    edges_by_key: dict[tuple[str, str], dict[str, str]] = {}
 
-    def emit(base_vt: str, derived_vt: str, reason: str, confidence: str) -> None:
+    def emit(
+        base_vt: str,
+        derived_vt: str,
+        reason: str,
+        confidence: str,
+        signal: str,
+    ) -> None:
         base_id = vtable_to_class.get(base_vt)
         derived_id = vtable_to_class.get(derived_vt)
         if not base_id or not derived_id or base_id == derived_id:
             return
         key = (base_id, derived_id)
-        if key in seen:
+        existing = edges_by_key.get(key)
+        if existing is None:
+            edges_by_key[key] = {
+                "base": base_id,
+                "derived": derived_id,
+                "confidence": confidence,
+                "signal": signal,
+                "reason": reason,
+            }
             return
-        seen.add(key)
-        edges.append({
-            "base": base_id,
-            "derived": derived_id,
-            "confidence": confidence,
-            "reason": reason,
-        })
+        # Edge already known. If a different signal corroborates it,
+        # upgrade to high confidence and mark as supported by both.
+        if existing["signal"] != signal and existing["signal"] != "both":
+            existing["confidence"] = "high"
+            existing["signal"] = "both"
+            if reason not in existing["reason"]:
+                existing["reason"] = f"{existing['reason']} {reason}"
 
     # Group every vtable store by the constructor that performs it.
     ctor_to_stores: dict[str, list[dict[str, Any]]] = {}
@@ -316,7 +402,8 @@ def _detect_inheritance_from_constructors(
             emit(
                 seen_vts[k - 1], seen_vts[k],
                 "Constructor stores base vtable then overwrites with derived vtable.",
-                "high",
+                "medium",
+                "store_order",
             )
 
     # Signal 2: constructor A calls constructor B; B writes the base
@@ -347,9 +434,10 @@ def _detect_inheritance_from_constructors(
                         caller_store.get("vtable", ""),
                         "Constructor calls a constructor that installs a different vtable.",
                         "high",
+                        "call_graph",
                     )
 
-    return edges
+    return list(edges_by_key.values())
 
 
 def _parse_hex_addr(value: str) -> int:

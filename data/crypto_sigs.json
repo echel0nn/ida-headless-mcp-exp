@@ -3,13 +3,15 @@
     "name": "AES_S_box",
     "bytes": "637c777bf26b6fc53001672bfed7ab76",
     "size": 256,
-    "algo": "AES"
+    "algo": "AES",
+    "word_size": 1
   },
   {
     "name": "AES_inv_S_box",
     "bytes": "52096ad53036a538bf40a39e81f3d7fb",
     "size": 256,
-    "algo": "AES"
+    "algo": "AES",
+    "word_size": 1
   },
   {
     "name": "AES_Rcon",
@@ -41,7 +43,8 @@
     "name": "SHA512_K",
     "bytes": "428a2f98d728ae227137449123ef65cd",
     "size": 640,
-    "algo": "SHA-512"
+    "algo": "SHA-512",
+    "word_size": 8
   },
   {
     "name": "MD5_T",
@@ -61,13 +64,15 @@
     "name": "DES_IP",
     "bytes": "3a32222a121a020a3c34242c141c040c",
     "size": 64,
-    "algo": "DES"
+    "algo": "DES",
+    "word_size": 1
   },
   {
     "name": "DES_FP",
     "bytes": "2800200818100800",
     "size": 64,
-    "algo": "DES"
+    "algo": "DES",
+    "word_size": 1
   },
   {
     "name": "DES_S1",
@@ -93,7 +98,8 @@
     "name": "RC4_init",
     "bytes": "000102030405060708090a0b0c0d0e0f",
     "size": 256,
-    "algo": "RC4"
+    "algo": "RC4",
+    "word_size": 1
   },
   {
     "name": "CRC32_table_std",
@@ -120,7 +126,8 @@
     "name": "Camellia_SIGMA1",
     "bytes": "a09e667f3bcc908b",
     "size": 8,
-    "algo": "Camellia"
+    "algo": "Camellia",
+    "word_size": 8
   },
   {
     "name": "Camellia_SP1",
@@ -164,7 +171,8 @@
     "name": "Whirlpool_C0",
     "bytes": "18186018c07830d8",
     "size": 2048,
-    "algo": "Whirlpool"
+    "algo": "Whirlpool",
+    "word_size": 8
   },
   {
     "name": "RIPEMD160_H0",
@@ -176,7 +184,8 @@
     "name": "ChaCha20_sigma",
     "bytes": "61707865332073746279746573203332",
     "size": 16,
-    "algo": "ChaCha20"
+    "algo": "ChaCha20",
+    "word_size": 1
   },
   {
     "name": "ChaCha20_tau",
@@ -188,13 +197,15 @@
     "name": "Salsa20_sigma",
     "bytes": "61707865332073746279746573203332",
     "size": 16,
-    "algo": "Salsa20"
+    "algo": "Salsa20",
+    "word_size": 1
   },
   {
     "name": "Base64_alphabet",
     "bytes": "4142434445464748494a4b4c4d4e4f505152535455565758595a6162636465666768696a6b6c6d6e6f707172737475767778797a303132333435363738392b2f",
     "size": 64,
-    "algo": "Base64"
+    "algo": "Base64",
+    "word_size": 1
   },
   {
     "name": "SM4_SBOX",
