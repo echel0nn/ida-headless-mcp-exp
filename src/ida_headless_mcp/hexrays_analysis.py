@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+MAX_ACTIVE_STATES = 128  # angr state explosion limit
+
 __all__ = [
     "decompile_cfunc",
     "query_ctree_calls",
@@ -1361,7 +1363,7 @@ def constrained_reachability(
                 found = True
                 break
             # Cap active states
-            if len(simgr.active) > 128:
+            if len(simgr.active) > MAX_ACTIVE_STATES:
                 simgr.active = simgr.active[:128]
     except (RuntimeError, AttributeError, TypeError, MemoryError):
         pass  # Skip: angr cannot continue (state explosion, hook failure, or memory)

@@ -434,8 +434,7 @@ def _build_session_stub(sha_dir: Path):
     state_file = sha_dir / "state.json"
     if state_file.exists():
         try:
-            import json as _json
-            _state = _json.loads(state_file.read_text(encoding="utf-8"))
+            _state = json.loads(state_file.read_text(encoding="utf-8"))
             root_filename = _state.get("root_filename", "")
         except (ValueError, OSError):
             pass  # State file unreadable/malformed; proceed with empty root_filename
