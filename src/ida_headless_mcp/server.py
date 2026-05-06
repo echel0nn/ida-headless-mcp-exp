@@ -11,6 +11,7 @@ The shared filesystem cache is the only communication channel.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -83,8 +84,7 @@ class _Frontend:
         hb_path = self.settings.cache_dir / sha / "worker_heartbeat.json"
         if hb_path.exists():
             try:
-                import json as _json
-                hb = _json.loads(hb_path.read_text(encoding="utf-8"))
+                hb = json.loads(hb_path.read_text(encoding="utf-8"))
                 age = int(_time.time() - hb.get("timestamp", 0))
                 result["worker_phase"] = hb.get("status", "unknown")
                 result["heartbeat_age_s"] = age
@@ -330,8 +330,7 @@ def worker_status() -> dict:
         hb_age = -1
         if hb.exists():
             try:
-                import json as _json
-                h = _json.loads(hb.read_text(encoding="utf-8"))
+                h = json.loads(hb.read_text(encoding="utf-8"))
                 pid = h.get("pid")
                 hb_status = h.get("status", "")
                 hb_age = int(time.time() - h.get("timestamp", 0))
@@ -387,8 +386,7 @@ def worker_status() -> dict:
             info["recent_errors"] = []
             for ef in err_files:
                 try:
-                    import json as _json
-                    ed = _json.loads(ef.read_text(encoding="utf-8"))
+                    ed = json.loads(ef.read_text(encoding="utf-8"))
                     info["recent_errors"].append({
                         "type": ed.get("type", ""),
                         "error": ed.get("error", "")[:100],
