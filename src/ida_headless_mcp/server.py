@@ -121,9 +121,10 @@ class _Frontend:
 
         return result
 
-    # Default timeout for blocking wait (seconds)
-    TOOL_WAIT_TIMEOUT = 120
-    POLL_INTERVAL = 1.0
+    # Poll timeout — MCP stdio clients typically allow 60s.
+    # 30s is enough for most tools after bootstrap.
+    TOOL_WAIT_TIMEOUT = 30
+    POLL_INTERVAL = 0.5
 
     def _cached_or_pending(
         self,
