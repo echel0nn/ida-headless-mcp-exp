@@ -77,6 +77,7 @@ def solve_smtlib(
             capture_output=True,
             text=True,
             timeout=timeout_ms / 1000.0,
+            stdin=subprocess.DEVNULL,
         )
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
