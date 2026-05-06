@@ -110,7 +110,13 @@ def detect_crypto_primitives(
     # Scan data sections against all signatures
     for addr, data in data_bytes:
         for sig in sigs:
-            pattern = bytes.fromhex(sig["bytes"][:32])  # first 16 bytes for matching
+            hex_str = sig["bytes"].replace(" ", "")[:32]
+            if len(hex_str) % 2 != 0:
+                hex_str = hex_str[:-1]  # ensure even length
+            try:
+                pattern = bytes.fromhex(hex_str)
+            except ValueError:
+                continue  # skip malformed signature
             idx = data.find(pattern)
             if idx >= 0:
                 primitives.append({
