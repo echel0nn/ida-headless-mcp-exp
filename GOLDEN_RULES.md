@@ -118,18 +118,59 @@ Rules that should be programmatically enforced (future):
 | `__all__` in every module | AILA-16 |
 | No TODO in committed code | AILA-9 |
 | No silent None returns from tools | 9 |
+| Duplicate `_resolve` implementations | 24 |
+| Mixed error semantics (raise AND return error dict) | 9, 27 |
+| `sha` vs `sha256` parameter naming | 13 |
+| `import json as _json` inside functions (use top-level) | AILA-15 |
+| Return key naming: `_found` vs `_count` vs `_total` (pick one per concept) | 28 |
+| Magic numbers > 100 without named constant | 14 |
 
 ---
 
 ## Current Violations (honest accounting)
 
-| Rule | Violations | Files |
-|---|---|---|
-| 17 (no silent except) | 10 | binary_worker, hexrays_analysis, lifecycle, session, worker |
-| 18 (no god objects) | 3 | session.py (72 methods), lifecycle.py (21), cache_reader.py (15) |
-| 19 (docstrings) | 60 | hexrays_analysis, diff, function_index, detection |
-| 20 (7+ params) | 12 | session.py, hexrays_analysis, server.py, function_index |
-| 21 (file size) | 3 | session.py (3287), server.py (1913), hexrays_analysis (1700) |
-| 22 (hardcoded paths) | 1 | config.py |
+### Structural (blocking release)
 
-These will be fixed in Phase 10 (quality gate).
+| Rule | Violations | Fix |
+|---|---|---|
+| 17 (no silent except) | 12 remain (all typed, need inline comments) | Add `# reason` to pass lines |
+| 18 (no god objects) | 3 classes: session.py (72), lifecycle.py (21), cache_reader.py (15) | Split session.py by domain |
+| 19 (docstrings) | 60 public functions missing | Add Google-style docstrings |
+| 20 (7+ params) | 12 functions | Use typed dicts or dataclasses |
+| 21 (file size) | 3 files >1000 LOC: session(3287), server(1913), hexrays(1700) | Split by responsibility |
+
+### Consistency (quality gate)
+
+| Finding | Count | Fix |
+|---|---|---|
+| Duplicate `_resolve_address` / `_resolve` | 3 files (binary_worker, cache_reader, session) | Single canonical impl, import everywhere |
+| Mixed error semantics (raise + error dict) | 8 functions in session.py | Pick one: raises for programmer errors, error dict for expected failures |
+| `sha` vs `sha256` naming | 1 instance in lifecycle.py (`_evict_worker`) | Rename to `sha256` |
+| `import json as _json` in function bodies | 5 sites (server, detection, binary_worker) | Import at module level or use existing import |
+| Return key naming chaos | `_count` (9), `_found` (6), `_total` (9) | Convention: `X_count` for how many, `X_found` for search results, `total_X` for aggregates |
+| Magic number 128 (angr state limit) | 1 in hexrays_analysis | `MAX_ACTIVE_STATES = 128` |
+| Magic number 259 (STILL_ACTIVE) | 1 in lifecycle | Already has comment, acceptable |
+| `binary_id` added to result inconsistently | 21 `result["binary_id"]=` vs 32 inline in dict literal | Pick one pattern: always add post-hoc in server.py, never in session.py |
+
+### Dead code suspects
+
+| Function | File | Evidence |
+|---|---|---|
+| `_check_dead_code` | detection.py | Only appears once (definition) |
+| `_check_opaque_predicates` | detection.py | Only appears once (definition) |
+| `_collect_metadata` | session.py | Only appears once (definition) |
+| `_touch_manifest` | session.py | Only appears once (definition) |
+| `_workspace_path` | session.py | Only appears once (definition) |
+
+---
+
+## Conventions (decided)
+
+| Topic | Convention | Rationale |
+|---|---|---|
+| Error reporting | Tools return `{"error": "msg"}` for expected failures. Raise `ValueError`/`KeyError` for programmer errors (invalid binary_id, bad address). | Agents can handle error dicts; raises become MCP error responses. |
+| Address format | Always `f"0x{ea:x}"` (lowercase hex, 0x prefix) | Consistent, matches IDA display. |
+| Parameter naming | `binary_id`, `sha256`, `address_or_name` | Never abbreviate: no `sha`, `addr`, `bid`. |
+| Return key style | `snake_case`. Counts: `X_count`. Search results: `X_found`. Aggregates: `total_X`. | Predictable for agent JSON parsing. |
+| Imports | Module-level for stdlib/project. Inside functions ONLY for `ida_*` (which crash server). | `import json as _json` inside functions is banned. |
+| `binary_id` in results | session.py methods do NOT add binary_id. server.py adds it post-hoc (`cached["binary_id"] = binary_id`). | Single responsibility: session doesn't know its own binary_id. |
