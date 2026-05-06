@@ -118,8 +118,10 @@ class LifecycleManager:
         while True:
             try:
                 self._arbiter_tick()
-            except Exception:
-                pass  # Arbiter must never crash; errors are non-fatal
+            except Exception as exc:
+                import sys, traceback
+                print(f"[arbiter] tick error: {exc}", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
             time.sleep(ARBITER_TICK)
 
     def _arbiter_tick(self) -> None:
