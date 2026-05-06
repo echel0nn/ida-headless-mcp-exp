@@ -47,6 +47,7 @@ class FunctionDiffSummary:
 
 
 def build_function_fingerprint(entry: FunctionIndexEntry) -> str:
+    """Compute a SHA-256 fingerprint for a function index entry."""
     payload = {
         "size": entry.size_bytes,
         "complexity": entry.cyclomatic_complexity,
@@ -59,6 +60,7 @@ def build_function_fingerprint(entry: FunctionIndexEntry) -> str:
 
 
 def compare_function_entries(old: FunctionIndexEntry, new: FunctionIndexEntry) -> FunctionPairMatch:
+    """Compare two function index entries and return a similarity-scored match."""
     added_callees = tuple(sorted(set(new.callees) - set(old.callees)))
     removed_callees = tuple(sorted(set(old.callees) - set(new.callees)))
     added_strings = tuple(sorted(set(new.string_refs) - set(old.string_refs)))
@@ -101,6 +103,7 @@ def diff_binary_indexes(
     old_entries: list[FunctionIndexEntry],
     new_entries: list[FunctionIndexEntry],
 ) -> dict[str, Any]:
+    """Diff two function index lists; return added, removed, and changed entries."""
     old_by_name = {e.name: e for e in old_entries}
     new_by_name = {e.name: e for e in new_entries}
 
@@ -195,6 +198,7 @@ def diff_binary_indexes(
 
 
 def diff_function_payloads(old_payload: dict[str, Any], new_payload: dict[str, Any]) -> dict[str, Any]:
+    """Produce a unified pseudocode diff between two function decompilation payloads."""
     old_lines = str(old_payload.get("pseudocode", "")).splitlines()
     new_lines = str(new_payload.get("pseudocode", "")).splitlines()
     diff_lines = list(

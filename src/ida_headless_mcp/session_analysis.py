@@ -45,6 +45,7 @@ class AnalysisMixin:
         limit: int = 50,
         max_lines: int = 120,
     ) -> dict[str, Any]:
+        """Search for vulnerability patterns across indexed functions."""
         rec = self._require(binary_id)
         pattern = pattern_type.strip().lower()
 
@@ -664,6 +665,7 @@ class AnalysisMixin:
         operand_type_is: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
+        """Query the decompiler CTree for call expressions matching predicates."""
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -691,6 +693,7 @@ class AnalysisMixin:
         *,
         maturity: str = "current",
     ) -> dict[str, Any]:
+        """Return textual Hex-Rays microcode for a function."""
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -705,6 +708,7 @@ class AnalysisMixin:
 
     @requires(BinaryState.ACTIVE)
     def hexrays_warnings(self, binary_id: str, address_or_name: str) -> dict[str, Any]:
+        """Return Hex-Rays decompiler warnings for a function."""
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -727,6 +731,7 @@ class AnalysisMixin:
         context_lines: int = 5,
         max_slices: int = 10,
     ) -> dict[str, Any]:
+        """Return focused pseudocode slices around call sites or addresses."""
         import ida_funcs
 
         ea = _resolve_address(address_or_name)
@@ -1063,6 +1068,7 @@ class AnalysisMixin:
 
     @requires(BinaryState.INDEXED)
     def diff_binary(self, binary_id_old: str, binary_id_new: str) -> dict[str, Any]:
+        """Diff two analyzed binaries structurally by function metadata."""
         self._activate(binary_id_old)
         old_entries = self._indices[binary_id_old].entries
         self._activate(binary_id_new)
@@ -1081,6 +1087,7 @@ class AnalysisMixin:
         address_or_name_new: str,
         max_lines: int = 500,
     ) -> dict[str, Any]:
+        """Diff two functions with side-by-side pseudocode and a unified diff."""
         old_payload = self.decompile(binary_id_old, address_or_name_old, max_lines=max_lines)
         new_payload = self.decompile(binary_id_new, address_or_name_new, max_lines=max_lines)
         payload = diff_function_payloads(old_payload, new_payload)

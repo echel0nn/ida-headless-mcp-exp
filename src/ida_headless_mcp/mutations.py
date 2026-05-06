@@ -33,6 +33,7 @@ class Generation:
         self._path = sha_dir / "generation.txt"
 
     def read(self) -> int:
+        """Read current generation counter."""
         if not self._path.exists():
             return 0
         try:
@@ -41,6 +42,7 @@ class Generation:
             return 0
 
     def bump(self) -> int:
+        """Increment and return new generation counter."""
         gen = self.read() + 1
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(str(gen), encoding="utf-8")
