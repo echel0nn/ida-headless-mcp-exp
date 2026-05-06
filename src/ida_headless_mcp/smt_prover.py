@@ -124,7 +124,7 @@ def solve_smtlib(
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            pass  # Best-effort temp file cleanup; OS reaps on reboot if this fails
 
 
 def _parse_model(lines: list[str]) -> dict[str, int]:

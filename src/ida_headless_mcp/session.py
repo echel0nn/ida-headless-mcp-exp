@@ -76,7 +76,11 @@ class IDABinarySessionManager:
         self._ida = bootstrap_ida(settings)
         try:
             self._ida.enable_console_messages(False)
-        except Exception:
+        except (AttributeError, RuntimeError):
+            # Best-effort console quietening; the manager works fine if IDA's
+            # console-message API is unavailable in this build. The worker
+            # subprocess (worker.py) is the only place where stdout cleanliness
+            # is load-bearing for JSON-RPC; this in-process manager doesn't share that.
             pass
         self._records: dict[str, BinaryRecord] = {}
         self._active_binary_id: str | None = None
@@ -2490,6 +2494,8 @@ class IDABinarySessionManager:
             for imp in imp_data.get('imports', []):
                 all_apis.add(_normalize_api_name(imp['name']))
         except (RuntimeError, ValueError):
+            # imports() may fail if the binary isn't fully loaded; behavioral
+            # categorization still works on the callee-derived API set alone.
             pass
 
         # Normalize the dictionary keys too
@@ -2573,6 +2579,8 @@ class IDABinarySessionManager:
             for imp in imp_data.get('imports', []):
                 all_apis.add(_normalize_api_name(imp['name']))
         except (RuntimeError, ValueError):
+            # imports() may fail if the binary isn't fully loaded; anti-analysis
+            # detection still runs on the callee-derived API set alone.
             pass
 
         techniques: list[dict[str, Any]] = []
@@ -3005,6 +3013,8 @@ class IDABinarySessionManager:
         try:
             self._ida.close_database(True)
         except (RuntimeError, OSError):
+            # No database is currently open, or idalib refused the close; the
+            # subsequent open_database call will surface any real failure.
             pass
         if self._active_binary_id and self._active_binary_id in self._records:
             self._records[self._active_binary_id].active = False
@@ -3044,6 +3054,9 @@ class IDABinarySessionManager:
                 try:
                     stale.unlink()
                 except OSError:
+                    # Best-effort cleanup of a stale IDA lock file from a prior
+                    # hard-kill; if unlink fails, open_database below will fail
+                    # loudly with the real error code.
                     pass
         rc = self._ida.open_database(str(path), True)
         if rc != 0:
@@ -3150,6 +3163,8 @@ class IDABinarySessionManager:
             try:
                 manifest = json.loads(self._manifest_path.read_text(encoding='utf-8'))
             except (OSError, json.JSONDecodeError):
+                # Corrupt or unreadable manifest — fall through with an empty dict;
+                # the upcoming write_text replaces it with a fresh, valid manifest.
                 pass
         manifest[sha256] = {
             "last_accessed": time.time(),
