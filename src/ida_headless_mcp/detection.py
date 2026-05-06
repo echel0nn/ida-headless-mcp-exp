@@ -6,6 +6,7 @@ that the consumer uses to decide which expensive tools to invoke.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
