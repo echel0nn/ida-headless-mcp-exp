@@ -135,11 +135,33 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
             except OSError:
                 pass  # Lock file may not exist or be held by another process
 
-    # Open database
+    # Open database — serialized via file lock.
+    # idalib loads processor modules, type libs, and plugins from the
+    # shared IDA install dir. Concurrent open_database across workers
+    # causes Windows DLL file contention and hangs indefinitely.
+    # Workers acquire a lock before open_database and release after.
     _current_phase = "loading_database"
     _t3 = _time.perf_counter()
-    print(f"[worker] t={(_t3-_t0)*1000:.0f}ms: calling open_database", file=sys.stderr, flush=True)
+    print(f"[worker] t={(_t3-_t0)*1000:.0f}ms: acquiring idalib lock", file=sys.stderr, flush=True)
+    lock_path = cache_dir / "idalib_open.lock"
+    lock_fh = open(lock_path, "w")
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(lock_fh.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+    _t3b = _time.perf_counter()
+    print(f"[worker] t={(_t3b-_t0)*1000:.0f}ms: lock acquired, calling open_database", file=sys.stderr, flush=True)
     rc = ida_mod.open_database(str(binary_path), True)
+    # Release lock immediately after open_database returns
+    if os.name == "nt":
+        msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+    lock_fh.close()
+    _t3c = _time.perf_counter()
+    print(f"[worker] t={(_t3c-_t0)*1000:.0f}ms: lock released", file=sys.stderr, flush=True)
     if rc != 0:
         _update_state(sha_dir, error=f"open_database failed with code {rc}")
         stop_heartbeat.set()

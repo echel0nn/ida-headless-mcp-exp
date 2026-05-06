@@ -184,35 +184,7 @@ class LifecycleManager:
                 time.sleep(SPAWN_STAGGER - since_last)
 
             if self._do_spawn(lc):
-                # Wait for worker to pass open_database before spawning next.
-                # idalib loads processor modules, type libs, and plugins from
-                # the shared IDA install dir. Concurrent loading causes hangs.
-                self._wait_past_loading(lc.sha256, timeout=30)
                 alive_count += 1
-
-    def _wait_past_loading(self, sha256: str, timeout: float = 30) -> None:
-        """Block until a worker's heartbeat advances past loading_database.
-
-        idalib's open_database loads processor modules, type libraries,
-        and plugins from the shared IDA install directory. Concurrent
-        loading across processes causes file contention and hangs.
-        This serializes the open_database phase across workers.
-        """
-        hb_path = self.cache_dir / sha256 / "worker_heartbeat.json"
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if hb_path.exists():
-                try:
-                    hb = json.loads(hb_path.read_text(encoding="utf-8"))
-                    phase = hb.get("status", "")
-                    if phase in ("idle", "ready") or phase.startswith("processing"):
-                        return  # Worker passed loading, safe to spawn next
-                except (json.JSONDecodeError, OSError):
-                    pass
-            proc = self._worker_procs.get(sha256)
-            if proc and proc.poll() is not None:
-                return  # Worker died, no point waiting
-            time.sleep(0.5)
 
 
     def _evict_worker(self, sha256: str) -> None:
