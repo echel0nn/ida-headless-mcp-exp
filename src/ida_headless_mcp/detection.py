@@ -100,12 +100,11 @@ def detect_crypto_primitives(
     primitives: list[dict[str, Any]] = []
 
     # Load signature database
-    import json as _json
     from pathlib import Path as _Path
     sig_path = _Path(__file__).parent.parent.parent / "data" / "crypto_sigs.json"
     sigs: list[dict] = []
     if sig_path.exists():
-        sigs = _json.loads(sig_path.read_text(encoding="utf-8"))
+        sigs = json.loads(sig_path.read_text(encoding="utf-8"))
 
     # Scan data sections against all signatures.
     # x86 binaries store dword constants little-endian, so a BE-form sig like

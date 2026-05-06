@@ -184,9 +184,9 @@ class LifecycleManager:
             if self._do_spawn(lc):
                 alive_count += 1
 
-    def _evict_worker(self, sha: str) -> None:
+    def _evict_worker(self, sha256: str) -> None:
         """Terminate a worker to make room for a new one."""
-        proc = self._worker_procs.get(sha)
+        proc = self._worker_procs.get(sha256)
         if proc is None:
             return
         try:
@@ -197,10 +197,10 @@ class LifecycleManager:
                 proc.kill()
             except OSError:
                 pass  # Best-effort kill; process may already be dead
-        self._worker_procs.pop(sha, None)
-        self._worker_activity.pop(sha, None)
+        self._worker_procs.pop(sha256, None)
+        self._worker_activity.pop(sha256, None)
         for lc in self._lifecycles.values():
-            if lc.sha256 == sha:
+            if lc.sha256 == sha256:
                 lc.state = BinaryState.READY
                 lc.decompile_worker_pid = None
                 self._save(lc)
