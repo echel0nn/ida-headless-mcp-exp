@@ -93,6 +93,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
         cache_dir: Root cache directory containing per-binary subdirs.
         idle_timeout: Seconds without activity before the worker exits.
     """
+    print(f"[worker] STARTED sha={sha256[:12]} cache_dir={cache_dir}", file=sys.stderr, flush=True)
     sha_dir = cache_dir / sha256
     workspace = sha_dir / "workspace"
     queue_path = sha_dir / QUEUE_FILENAME
@@ -577,7 +578,25 @@ def main() -> int:
     parser.add_argument("--cache-dir", required=True)
     parser.add_argument("--idle-timeout", type=int, default=900)
     args = parser.parse_args()
-    run_worker(args.sha256, Path(args.cache_dir), args.idle_timeout)
+
+    # Redirect stderr to log file FIRST — before anything can crash
+    log_dir = Path(args.cache_dir) / args.sha256 / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "worker_stderr.log"
+    try:
+        sys.stderr = open(log_file, "a", encoding="utf-8", buffering=1)  # line-buffered
+    except OSError:
+        pass  # keep original stderr if log file fails
+
+    print(f"[worker] PID={__import__('os').getpid()} sha={args.sha256[:12]} starting", file=sys.stderr, flush=True)
+
+    try:
+        run_worker(args.sha256, Path(args.cache_dir), args.idle_timeout)
+    except Exception:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        return 1
     return 0
 
 
