@@ -46,8 +46,8 @@ def get_argument_names(cfunc: Any) -> list[str]:
     try:
         for arg in cfunc.arguments:
             out.append(str(arg.name))
-    except Exception:
-        pass
+    except (AttributeError, TypeError):
+        pass  # Skip: IDA cannot process this item (bad address/unsupported)
     return out
 
 
@@ -153,8 +153,8 @@ def get_microcode_text(cfunc: Any, maturity: str = "current") -> dict[str, Any]:
             raise ValueError(f"Unknown microcode maturity: {maturity!r}")
         try:
             mba.set_maturity(mat)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError):
+            pass  # Skip: IDA cannot set this maturity level (unsupported)
 
     printer = ida_hexrays.qstring_printer_t(cfunc, False)
     mba._print(printer)
@@ -760,7 +760,7 @@ def pseudocode_slice(
         try:
             focus_addr = int(focus_address.strip(), 16)
         except ValueError:
-            pass
+            pass  # Non-numeric value, skip
 
     # Find matching lines
     hit_indices: list[int] = []
@@ -781,7 +781,7 @@ def pseudocode_slice(
                     if i not in hit_indices:
                         hit_indices.append(i)
         except (AttributeError, TypeError):
-            pass
+            pass  # IDA version may not expose eamap/get_line_item — degrade gracefully
 
     # Deduplicate and limit
     hit_indices = sorted(set(hit_indices))[:max_slices]
@@ -869,8 +869,8 @@ def microcode_def_use(
                             callee_name = _ida_name.get_ea_name(raw_g) or f'0x{raw_g:x}'
                         else:
                             callee_name = str(raw_g)
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError):
+                    pass  # Skip: IDA cannot extract callee name (bad address/unsupported)
 
             # Filter by target callee if requested
             if target_fn:
@@ -962,7 +962,7 @@ def microcode_value_ranges(cfunc: Any) -> dict[str, Any]:
             try:
                 current_block = int(parts)
             except ValueError:
-                pass
+                pass  # Non-numeric value, skip
 
         # Match VALRANGES annotation
         if 'VALRANGES:' in stripped:
@@ -1318,7 +1318,7 @@ def constrained_reachability(
                 state.solver.add(reg_val != val)
                 constraints_applied.append(f"{reg_name} != {val}")
             except ValueError:
-                pass
+                pass  # Non-numeric value, skip
         elif constraint.startswith('[') and ',' in constraint:
             # Range constraint [low, high]
             try:
@@ -1329,7 +1329,7 @@ def constrained_reachability(
                 state.solver.add(reg_val <= high)
                 constraints_applied.append(f"{reg_name} in [{low}, {high}]")
             except (ValueError, IndexError):
-                pass
+                pass  # Non-numeric or malformed range, skip
 
     # Hook common library functions with simprocedures to avoid explosion
     hooked = []
@@ -1363,8 +1363,8 @@ def constrained_reachability(
             # Cap active states
             if len(simgr.active) > 128:
                 simgr.active = simgr.active[:128]
-    except Exception:
-        pass
+    except (RuntimeError, AttributeError, TypeError, MemoryError):
+        pass  # Skip: angr cannot continue (state explosion, hook failure, or memory)
 
     elapsed = time.monotonic() - t0
 
@@ -1671,7 +1671,7 @@ def _classify_expr(expr: str) -> str:
         int(c)
         return "constant"
     except ValueError:
-        pass
+        pass  # Non-numeric value, skip
 
     # Function call
     if re.search(r'\w+\s*\(', e):

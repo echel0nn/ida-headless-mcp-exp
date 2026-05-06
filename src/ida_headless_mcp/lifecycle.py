@@ -119,7 +119,7 @@ class LifecycleManager:
             try:
                 self._arbiter_tick()
             except Exception:
-                pass  # Arbiter must never crash
+                pass  # Arbiter must never crash; errors are non-fatal
             time.sleep(ARBITER_TICK)
 
     def _arbiter_tick(self) -> None:
@@ -138,7 +138,7 @@ class LifecycleManager:
                 try:
                     hb.unlink()
                 except OSError:
-                    pass
+                    pass  # Best-effort cleanup; stale heartbeat may already be gone or locked
 
         # 2. Find binaries that need workers (have pending queue items)
         needs_worker: list[BinaryLifecycle] = []
@@ -155,7 +155,7 @@ class LifecycleManager:
                     if text:
                         needs_worker.append(lc)
                 except OSError:
-                    pass
+                    pass  # Best-effort queue probe; transient I/O errors don't block scheduling
 
         if not needs_worker:
             return
@@ -196,7 +196,7 @@ class LifecycleManager:
             try:
                 proc.kill()
             except OSError:
-                pass
+                pass  # Best-effort kill; process may already be dead
         self._worker_procs.pop(sha, None)
         self._worker_activity.pop(sha, None)
         for lc in self._lifecycles.values():
@@ -220,7 +220,7 @@ class LifecycleManager:
                     try:
                         f.unlink()
                     except OSError:
-                        pass
+                        pass  # Best-effort lock cleanup; file may be held by another IDA instance
 
         try:
             src_dir = str(Path(__file__).resolve().parent.parent)
@@ -309,7 +309,7 @@ class LifecycleManager:
             try:
                 hb_path.unlink(missing_ok=True)
             except OSError:
-                pass
+                pass  # Best-effort cleanup; heartbeat file may already be gone
             return False
 
     # ------------------------------------------------------------------
