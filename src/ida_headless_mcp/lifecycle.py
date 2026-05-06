@@ -25,7 +25,7 @@ from typing import Any
 __all__ = ["BinaryState", "BinaryLifecycle", "LifecycleManager"]
 
 ARBITER_TICK = 2.0       # seconds between supervisor ticks
-SPAWN_STAGGER = 3.0      # minimum seconds between consecutive worker spawns
+SPAWN_STAGGER = 0.5      # minimum seconds between spawns (bootstrap is ~0.3s)
 
 
 class BinaryState(enum.IntEnum):
