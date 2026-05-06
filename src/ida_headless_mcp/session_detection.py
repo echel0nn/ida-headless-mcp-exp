@@ -8,6 +8,7 @@ the core class.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ._resolve import _normalize_api_name, _resolve_address
