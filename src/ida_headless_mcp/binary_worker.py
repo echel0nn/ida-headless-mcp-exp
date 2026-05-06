@@ -24,7 +24,6 @@ __all__: list[str] = []
 QUEUE_FILENAME = "request_queue.jsonl"
 POLL_INTERVAL = 0.3
 HEARTBEAT_INTERVAL = 2.0  # seconds between heartbeat writes
-CODE_CHECK_INTERVAL = 10.0  # seconds between source mtime checks
 
 
 # Global mutable phase — the heartbeat thread reads this to know what to write
@@ -64,17 +63,6 @@ def _write_error(sha_dir: Path, req_type: str, error: str, detail: str = "") -> 
     except OSError:
         pass
 
-
-def _source_code_changed(start_time: float) -> bool:
-    """Check if any source file in this package is newer than worker start."""
-    src_dir = Path(__file__).parent
-    for f in src_dir.glob("*.py"):
-        try:
-            if f.stat().st_mtime > start_time:
-                return True
-        except OSError:
-            pass
-    return False
 
 
 def _heartbeat_thread(sha_dir: Path, stop_event: threading.Event) -> None:
@@ -183,23 +171,12 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
 
     gen = Generation(sha_dir)
     last_activity = time.monotonic()
-    last_code_check = 0.0
-    worker_start_time = time.time()
 
     while True:
         if time.monotonic() - last_activity > idle_timeout:
             _current_phase = "exiting_idle"
-            time.sleep(HEARTBEAT_INTERVAL + 0.5)  # let heartbeat thread write it
+            time.sleep(HEARTBEAT_INTERVAL + 0.5)
             break
-
-        # Code-change detection: exit if source files are newer than start
-        now = time.monotonic()
-        if now - last_code_check > CODE_CHECK_INTERVAL:
-            last_code_check = now
-            if _source_code_changed(worker_start_time):
-                _current_phase = "exiting_code_change"
-                time.sleep(HEARTBEAT_INTERVAL + 0.5)
-                break
 
         processed = False
         processed |= _consume_queue(
