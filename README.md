@@ -211,7 +211,6 @@ Everything reimplemented from scratch. No code copied. Just inspired by brillian
 | [VulFi](https://github.com/Accenture/VulFi) | Dangerous function xref patterns (our search_pattern surpasses it) | MIT |
 | [HexRaysPyTools](https://github.com/igogo-x86/HexRaysPyTools) | Vtable store-to-this+0 constructor detection for class hierarchy | MIT |
 | [Diaphora](https://github.com/joxeankoret/diaphora) | Structure hashing for cross-binary function similarity | GPL |
-| [Obpo](https://github.com/nickcano/obpo) | Per-block symbolic state solving approach for CFF deflattening | MIT |
 | [hrtng](https://github.com/KasperskyLab/hrtng) | 107 API hash algorithm definitions (ROR13, DJB2, CRC32, FNV-1a, malware-specific) | GPL |
 | [OALabs HashDB](https://github.com/OALabs/hashdb) | 33,167 precomputed hash-to-API entries across 107 algorithms | MIT |
 | [FindCrypt](https://github.com/d3v1l401/FindCrypt-Ghidra) / [signsrch](https://github.com/nihilus/IDA-Signsrch) | Crypto constant signature database (38 signatures, 27 algorithms) | GPL |
