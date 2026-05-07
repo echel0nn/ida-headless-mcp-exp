@@ -217,8 +217,9 @@ def miasm_simplify_expression(expression_str: str) -> dict[str, Any]:
     Returns:
         Dict with original and simplified expression strings.
     """
-    from miasm.expression.expression import ExprId, ExprInt, ExprOp
+    from miasm.expression.expression import ExprId, ExprInt, ExprOp, ExprCompose, ExprSlice
     from miasm.expression.simplifications import expr_simp
+    import re
 
     # Build a namespace of common registers for parsing
     regs_64 = {
@@ -231,10 +232,23 @@ def miasm_simplify_expression(expression_str: str) -> dict[str, Any]:
         name: ExprId(name, 32)
         for name in ["EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP", "ESP"]
     }
-    ns = {**regs_64, **regs_32, "ExprInt": ExprInt, "ExprId": ExprId, "ExprOp": ExprOp}
+
+    # Pre-process: convert bare integer literals to ExprInt(val, 64)
+    # Matches hex (0x...) and decimal literals not already inside ExprInt()
+    processed = re.sub(
+        r'(?<!ExprInt\()\b(0[xX][0-9a-fA-F]+|\d+)\b',
+        lambda m: f'ExprInt({m.group(1)}, 64)',
+        expression_str,
+    )
+
+    ns = {
+        **regs_64, **regs_32,
+        "ExprInt": ExprInt, "ExprId": ExprId, "ExprOp": ExprOp,
+        "ExprCompose": ExprCompose, "ExprSlice": ExprSlice,
+    }
 
     try:
-        expr = eval(expression_str, {"__builtins__": {}}, ns)  # noqa: S307 — sandboxed namespace
+        expr = eval(processed, {"__builtins__": {}}, ns)  # noqa: S307 — sandboxed namespace
     except Exception as exc:
         return {"error": f"Cannot parse expression: {exc}", "original": expression_str}
 
