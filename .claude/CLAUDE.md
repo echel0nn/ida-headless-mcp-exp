@@ -1,12 +1,12 @@
 # ida-headless-mcp — Claude Code Instructions
 
-Non-blocking binary analysis MCP server for IDA Pro 9.0. 65 tools. Python 3.11+, idalib backend, filesystem cache IPC.
+Non-blocking binary analysis MCP server for IDA Pro 9.0. 69 tools. Python 3.11+, idalib backend, filesystem cache IPC.
 
 ## Repository Layout
 
 ```
 src/ida_headless_mcp/
-  server.py            # MCP server (65 tools, pure cache reader, ZERO idalib imports)
+  server.py            # MCP server (69 tools, pure cache reader, ZERO idalib imports)
   binary_worker.py     # Worker process (owns .i64, processes queue, writes cache)
   session.py           # IDA analysis engine (3200 LOC, all tool implementations)
   hexrays_analysis.py  # CTree queries, microcode, taint, assessment
@@ -26,6 +26,7 @@ src/ida_headless_mcp/
   smt_prover.py        # binbit solver interface
   api_hashes.py        # API hash DB (107 algorithms)
   capa_rules.py        # CAPA rule evaluation engine
+  miasm_tools.py       # Server-side miasm tools (disassemble, IR, simplify, emulate)
 
 data/
   crypto_sigs.json     # 38 cryptographic constant signatures
@@ -74,7 +75,7 @@ python -m ida_headless_mcp.server                   # stdio mode
 See `GOLDEN_RULES.md` for the full 32-rule set. Critical ones:
 
 ### 1. No silent failures
-Every `except` block either logs, writes to error file, or re-raises. `except Exception: pass` is banned. 10 current violations to fix.
+Every `except` block either logs, writes to error file, or re-raises. `except Exception: pass` is banned.
 
 ### 2. Every tool tells the truth
 - Detection tools: report what CAN trigger false positives
@@ -82,7 +83,7 @@ Every `except` block either logs, writes to error file, or re-raises. `except Ex
 - Pending responses: include worker_action, worker_phase, message
 
 ### 3. No god objects
-session.py has 72 methods. Split by domain. 500 lines max per implementation file.
+session.py split into 4 domain mixins (SessionCore, DetectionMixin, ProofMixin, AnalysisMixin). 500 lines max per implementation file.
 
 ### 4. Test on real binaries
 Every tool must work on: small (<100KB), medium (1-5MB), large (10MB+). A tool that only works on test_crypto.exe is a demo.
@@ -95,11 +96,17 @@ Crypto signatures have `word_size` and `endian` fields. No implicit x86 assumpti
 
 ## Adding a New Tool
 
-1. Implement in `session.py` (or split file) with `@requires(BinaryState.INDEXED)` decorator
+**IDA tool (needs worker):**
+1. Implement in `session.py` (or domain mixin) with `@requires(BinaryState.INDEXED)` decorator
 2. Add dispatch entry in `worker.py` `_dispatch()` function
 3. Add `@mcp.tool()` function in `server.py` that calls `_ida_tool()`
 4. Add test against at least one real binary
 5. Update README tool count
+
+**Server-side tool (no worker, instant):**
+1. Implement in `miasm_tools.py` or similar (reads raw PE bytes, no idalib)
+2. Add `@mcp.tool()` function in `server.py` that calls the implementation directly
+3. These run in the server process — keep them fast (<1s)
 
 ## Adding a New Detection Signature
 
@@ -116,6 +123,7 @@ Crypto signatures have `word_size` and `endian` fields. No implicit x86 assumpti
 5. **Writing to cache without generation stamp** — Every result dict must include `"generation": current_gen`. Without it, staleness detection breaks.
 6. **Hardcoding IDA paths** — All paths come from `config.py` which reads env vars.
 7. **Returning raw IDA objects** — Everything returned from session methods must be JSON-serializable dicts/lists/primitives. No ida_* objects in return values.
+8. **Missing stdin=DEVNULL on subprocess** — All `subprocess.Popen` and `subprocess.run` calls MUST set `stdin=subprocess.DEVNULL`. Workers inherit the MCP server's stdin (JSON-RPC pipe). idalib reads from stdin during init. Without DEVNULL, workers steal MCP messages and crash silently.
 
 ## Verification Checklist
 
