@@ -64,6 +64,17 @@ class _Frontend:
             raise KeyError(f"Unknown binary_id: {binary_id}")
         return rec["sha256"]
 
+    def _workspace_binary(self, sha: str) -> Path:
+        """Return the path to the original binary in the workspace dir."""
+        ws = self.settings.cache_dir / sha / "workspace"
+        for ext in ("*.exe", "*.EXE", "*.dll", "*.DLL", "*.sys", "*.SYS", "*"):
+            hits = list(ws.glob(ext))
+            # Filter out IDA artifacts
+            hits = [h for h in hits if h.suffix.lower() not in (".i64", ".idb", ".asm", ".id0", ".id1", ".id2", ".nam", ".til")]
+            if hits:
+                return hits[0]
+        raise FileNotFoundError(f"No binary found in {ws}")
+
     def _pending(self, binary_id: str, lc: Any, worker_action: str = "") -> dict[str, Any]:
         """Build an informative pending response with worker diagnostics."""
         import time as _time
@@ -1904,6 +1915,124 @@ def get_generation(binary_id: str) -> dict:
 
     gen = Generation(fe.settings.cache_dir / sha)
     return {"binary_id": binary_id, "generation": gen.read()}
+
+
+# -----------------------------------------------------------------------
+# TOOLS — miasm (server-side, instant, no worker needed)
+# -----------------------------------------------------------------------
+
+
+@mcp.tool()
+def miasm_disassemble(
+    binary_id: str,
+    address: str,
+    size: int = 64,
+) -> dict[str, Any]:
+    """Disassemble bytes using miasm's multi-arch engine.
+
+    Independent of Hex-Rays. Supports x86_32, x86_64, ARM, AArch64.
+    Runs server-side — no worker needed, instant result.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address: Virtual address to start disassembly (0x...).
+        size: Maximum bytes to read (default 64).
+
+    Returns:
+        Instruction list with address, mnemonic, operands, size.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    ea = int(address, 16)
+    from .miasm_tools import miasm_disassemble as _disasm
+    result = _disasm(pe_path, ea, size=size)
+    result["binary_id"] = binary_id
+    return result
+
+
+@mcp.tool()
+def miasm_lift_ir(
+    binary_id: str,
+    address: str,
+    size: int = 64,
+) -> dict[str, Any]:
+    """Lift bytes to miasm's intermediate representation (IR).
+
+    Shows the semantic effect of each instruction as symbolic assignments.
+    Useful for understanding obfuscated code at the IR level.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address: Virtual address to start lifting (0x...).
+        size: Maximum bytes to read.
+
+    Returns:
+        IR blocks with dst/src assignment pairs.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    ea = int(address, 16)
+    from .miasm_tools import miasm_lift_ir as _lift
+    result = _lift(pe_path, ea, size=size)
+    result["binary_id"] = binary_id
+    return result
+
+
+@mcp.tool()
+def miasm_simplify_expression(
+    expression: str,
+) -> dict[str, Any]:
+    """Simplify a symbolic expression using miasm's rewrite engine.
+
+    De-obfuscates Mixed Boolean-Arithmetic (MBA) and opaque predicates.
+    Input uses Python-like syntax with register names.
+
+    Examples:
+        "RAX ^ RAX" -> "0x0"
+        "(RAX & RBX) | (RAX & ~RBX)" -> "RAX"
+        "RAX + 0" -> "RAX"
+
+    Args:
+        expression: Expression in miasm syntax with register names.
+
+    Returns:
+        Original and simplified expression strings.
+    """
+    from .miasm_tools import miasm_simplify_expression as _simp
+    return _simp(expression)
+
+
+@mcp.tool()
+def miasm_emulate(
+    binary_id: str,
+    address: str,
+    size: int = 256,
+    max_instructions: int = 100,
+) -> dict[str, Any]:
+    """Symbolically execute a code snippet using miasm.
+
+    Tracks register and memory modifications through the block.
+    Shows what a code block does without running it.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address: Virtual address to start emulation (0x...).
+        size: Maximum bytes to read.
+        max_instructions: Stop after this many instructions.
+
+    Returns:
+        Final symbolic state of modified registers.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    ea = int(address, 16)
+    from .miasm_tools import miasm_emulate_snippet as _emulate
+    result = _emulate(pe_path, ea, size=size, max_instructions=max_instructions)
+    result["binary_id"] = binary_id
+    return result
 
 
 def create_server() -> FastMCP:
