@@ -116,7 +116,7 @@ binary_worker.py (loads .i64, processes requests, writes results to cache)
   |-- proof.py (SMT proofs via binbit solver)
   |-- detection.py (crypto, obfuscation, stack strings)
   |-- recovery.py (class hierarchy, protocol, CFG)
-
+```
 The server process has never seen idalib in its life. It reads files from disk. Workers do all the heavy lifting. You can kill anything, restart it, and lose absolutely nothing because everything is cached to disk. It's honestly beautiful.
 
 ## All 69 Tools
@@ -152,6 +152,7 @@ I'm not going to explain each one individually because we'd be here all day. Her
 **Miasm (4)** -- multi-arch disassembly, IR lifting, expression simplification / de-obfuscation, symbolic execution. All server-side. No worker. Instant. Supports x86_32, x86_64, ARM, AArch64, MIPS, SH4, PPC.
 
 **Mutations (8)** -- rename, comment, type, patch. Write-safe with generation counter and multi-agent queue.
+
 ## Performance
 
 Real benchmarks on a Ryzen 9 5900X, Windows 11, IDA Pro 9.0. All times measured with `time.perf_counter()`.
@@ -216,6 +217,7 @@ Everything reimplemented from scratch. No code copied. Just inspired by brillian
 | [FindCrypt](https://github.com/d3v1l401/FindCrypt-Ghidra) / [signsrch](https://github.com/nihilus/IDA-Signsrch) | Crypto constant signature database (38 signatures, 27 algorithms) | GPL |
 | [d810-ng](https://github.com/w00tzenheimer/d810-ng) | OLLVM/Tigress detection signature patterns | GPL |
 | gooMBA (IDA built-in) | MBA simplification runs automatically during decompile — we don't reimplement it | IDA license |
+
 ## License
 
 AGPL-3.0. Non-commercial.
