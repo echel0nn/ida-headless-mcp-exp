@@ -2,7 +2,7 @@
 
 ## Who consumes this MCP server
 
-LLM agents (Claude, GPT, Codex) call our 65 tools to analyze binaries. They don't see our source code. They see tool names, descriptions, and return values. Everything we expose must make sense to an agent that has never seen IDA Pro.
+LLM agents (Claude, GPT, Codex) call our 69 tools to analyze binaries. They don't see our source code. They see tool names, descriptions, and return values. Everything we expose must make sense to an agent that has never seen IDA Pro.
 
 ## Tool design principles for agents
 
@@ -44,6 +44,7 @@ There's no need to explicitly start workers. The arbiter handles it.
 - `diff_binary`, `diff_function`, `diff_survey` (reads cached indexes)
 - `find_similar_functions`, `cross_binary_similarity`
 - `call_chain`, `list_functions` (reads cached index)
+- `miasm_disassemble`, `miasm_lift_ir`, `miasm_simplify_expression`, `miasm_emulate` (reads raw PE bytes, multi-arch)
 
 **Fast (worker processes in <1s):**
 - `decompile`, `xrefs_to`, `xrefs_from`, `call_graph`
