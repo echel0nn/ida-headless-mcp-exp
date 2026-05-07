@@ -6,7 +6,7 @@
 <h1 align="center">IDA Headless MCP</h1>
 
 <p align="center">
-  <strong>65 tools. Non-blocking. The greatest binary analysis MCP server of All Time.</strong>
+  <strong>69 tools. Non-blocking. The greatest binary analysis MCP server of All Time.</strong>
 </p>
 
 ---
@@ -17,7 +17,7 @@ Alright so basically every IDA MCP server that exists right now is dogwater. You
 
 This one doesn't do that. Every single tool either gives you the answer immediately from cache or tells you exactly what's happening: "worker is bootstrapping IDA, give me 10 seconds." Then it processes in the background while you go do other things. Ten agents can hammer the same binary simultaneously and nobody blocks anyone. It's genuinely the most non-blocking thing I've ever seen in binary analysis.
 
-65 tools. SMT-backed proofs. Interprocedural taint. CAPA rules. YARA generation. All running through IDA Pro 9.0's idalib with zero plugins required. This is easily the most impressive MCP server in the binary analysis space right now and it's not even close.
+69 tools. SMT-backed proofs. Interprocedural taint. CAPA rules. YARA generation. Miasm symbolic execution. All running through IDA Pro 9.0's idalib with zero plugins required. This is easily the most impressive MCP server in the binary analysis space right now and it's not even close.
 
 ## Quick Start
 
@@ -101,12 +101,13 @@ Your Agent (Claude / Cursor / whatever)
   |
   | MCP protocol
   v
-server.py (65 tools, reads cache, NEVER touches IDA)
+server.py (69 tools, reads cache, NEVER touches IDA)
   |
   |-- Arbiter thread (supervisor, reaps dead workers, spawns new ones)
   |-- Cache reader (filesystem is the only IPC channel)
+  |-- Miasm tools (4 server-side: disassemble, IR lift, expression simplify, emulate)
   |
-  | spawns one subprocess per binary
+  | spawns one subprocess per binary (stdin=DEVNULL, isolated from MCP pipe)
   v
 binary_worker.py (loads .i64, processes requests, writes results to cache)
   |
@@ -115,11 +116,10 @@ binary_worker.py (loads .i64, processes requests, writes results to cache)
   |-- proof.py (SMT proofs via binbit solver)
   |-- detection.py (crypto, obfuscation, stack strings)
   |-- recovery.py (class hierarchy, protocol, CFG)
-```
 
 The server process has never seen idalib in its life. It reads files from disk. Workers do all the heavy lifting. You can kill anything, restart it, and lose absolutely nothing because everything is cached to disk. It's honestly beautiful.
 
-## All 65 Tools
+## All 69 Tools
 
 I'm not going to explain each one individually because we'd be here all day. Here's the categories:
 
@@ -149,8 +149,9 @@ I'm not going to explain each one individually because we'd be here all day. Her
 
 **Function Similarity (2)** -- find similar functions by structure hash, cross-binary correlation
 
-**Mutations (8)** -- rename, comment, type, patch. Write-safe with generation counter and multi-agent queue.
+**Miasm (4)** -- multi-arch disassembly, IR lifting, expression simplification / de-obfuscation, symbolic execution. All server-side. No worker. Instant. Supports x86_32, x86_64, ARM, AArch64, MIPS, SH4, PPC.
 
+**Mutations (8)** -- rename, comment, type, patch. Write-safe with generation counter and multi-agent queue.
 ## Performance
 
 Real benchmarks on a Ryzen 9 5900X, Windows 11, IDA Pro 9.0. All times measured with `time.perf_counter()`.
@@ -201,6 +202,7 @@ Everything reimplemented from scratch. No code copied. Just inspired by brillian
 |---|---|---|
 | [CAPA](https://github.com/mandiant/capa) | 678 behavioral rules + 106 ATT&CK technique mappings | Apache-2.0 |
 | [FLOSS](https://github.com/mandiant/flare-floss) | Stack string detection via virtual stack buffer + MOV width handling | Apache-2.0 |
+| [miasm](https://github.com/cea-sec/miasm) | Multi-arch disassembly, IR lifting, symbolic execution, expression simplification | GPLv2 |
 | [binbit](https://github.com/nickcano/binbit) | QF_BV SMT solver for 4ms overflow proofs | MIT |
 | [angr](https://github.com/angr/angr) | Symbolic execution engine for path feasibility + constrained reachability | BSD |
 | [mkYARA](https://github.com/fox-it/mkYARA) | Operand wildcarding modes (loose/normal/strict) for YARA generation | MIT |
@@ -214,12 +216,11 @@ Everything reimplemented from scratch. No code copied. Just inspired by brillian
 | [FindCrypt](https://github.com/d3v1l401/FindCrypt-Ghidra) / [signsrch](https://github.com/nihilus/IDA-Signsrch) | Crypto constant signature database (38 signatures, 27 algorithms) | GPL |
 | [d810-ng](https://github.com/w00tzenheimer/d810-ng) | OLLVM/Tigress detection signature patterns | GPL |
 | gooMBA (IDA built-in) | MBA simplification runs automatically during decompile — we don't reimplement it | IDA license |
-
 ## License
 
 AGPL-3.0. Non-commercial.
 
-binbit solver: MIT.
+miasm: GPLv2. binbit solver: MIT.
 
 ---
 
