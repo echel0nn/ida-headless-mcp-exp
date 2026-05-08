@@ -6,7 +6,7 @@
 <h1 align="center">IDA Headless MCP</h1>
 
 <p align="center">
-  <strong>69 tools. Non-blocking. The greatest binary analysis MCP server of All Time.</strong>
+  <strong>77 tools. Non-blocking. The greatest binary analysis MCP server of All Time.</strong>
 </p>
 
 ---
@@ -17,7 +17,7 @@ Alright so basically every IDA MCP server that exists right now is dogwater. You
 
 This one doesn't do that. Every single tool either gives you the answer immediately from cache or tells you exactly what's happening: "worker is bootstrapping IDA, give me 10 seconds." Then it processes in the background while you go do other things. Ten agents can hammer the same binary simultaneously and nobody blocks anyone. It's genuinely the most non-blocking thing I've ever seen in binary analysis.
 
-69 tools. SMT-backed proofs. Interprocedural taint. CAPA rules. YARA generation. Miasm symbolic execution. All running through IDA Pro 9.0's idalib with zero plugins required. This is easily the most impressive MCP server in the binary analysis space right now and it's not even close.
+77 tools. SMT-backed proofs. Interprocedural taint. CAPA rules. YARA generation. Miasm symbolic execution. CFF deflattening. All running through IDA Pro 9.0's idalib with zero plugins required. This is easily the most impressive MCP server in the binary analysis space right now and it's not even close.
 
 ## Quick Start
 
@@ -101,11 +101,15 @@ Your Agent (Claude / Cursor / whatever)
   |
   | MCP protocol
   v
-server.py (69 tools, reads cache, NEVER touches IDA)
+server.py (77 tools, reads cache, NEVER touches IDA)
   |
   |-- Arbiter thread (supervisor, reaps dead workers, spawns new ones)
   |-- Cache reader (filesystem is the only IPC channel)
   |-- Miasm tools (4 server-side: disassemble, IR lift, expression simplify, emulate)
+  |-- CFF tools (4 server-side: function CFG, CFF detection, deflattening, concrete emulation)
+  |     |-- cff_analysis.py / cff_helpers.py (orchestration, BlockInfo, dispatcher chain)
+  |     |-- cff_techniques/ (dispatchers, opaque predicates, state vars, signatures)
+  |     `-- pe_imports.py (PE IAT parsing for indirect call resolution)
   |
   | spawns one subprocess per binary (stdin=DEVNULL, isolated from MCP pipe)
   v
@@ -119,7 +123,7 @@ binary_worker.py (loads .i64, processes requests, writes results to cache)
 ```
 The server process has never seen idalib in its life. It reads files from disk. Workers do all the heavy lifting. You can kill anything, restart it, and lose absolutely nothing because everything is cached to disk. It's honestly beautiful.
 
-## All 69 Tools
+## All 77 Tools
 
 I'm not going to explain each one individually because we'd be here all day. Here's the categories:
 
@@ -151,7 +155,22 @@ I'm not going to explain each one individually because we'd be here all day. Her
 
 **Miasm (4)** -- multi-arch disassembly, IR lifting, expression simplification / de-obfuscation, symbolic execution. All server-side. No worker. Instant. Supports x86_32, x86_64, ARM, AArch64, MIPS, SH4, PPC.
 
+**CFF Analysis (4)** -- full function CFG via miasm `dis_multiblock`, CFF detection with 5 known signatures (OLLVM, Hikari, LCG-CFF, Tigress, Themida), full deflattening pipeline with state recovery and block classification, concrete emulation with seeded registers/memory for hash verification and crypto identification. All server-side. No worker. Instant. See the table below.
+
 **Mutations (8)** -- rename, comment, type, patch. Write-safe with generation counter and multi-agent queue.
+
+### CFF Analysis (server-side, instant)
+
+Server-side tools that analyze and undo control-flow flattening. No worker required, no IDA dependency at call time -- they parse the PE directly and run miasm CFG recovery.
+
+|Tool|Description|
+|---|---|
+|`disassemble_function`|Full function CFG via miasm `dis_multiblock`. Returns blocks, edges, per-block features.|
+|`detect_control_flow_obfuscation`|Detect CFF with dispatcher, opaque predicate, and state variable analysis. Matches against 5 known signatures (OLLVM, Hikari, LCG-CFF, Tigress, Themida).|
+|`deflat_function`|Deflat a CFF-obfuscated function. Recovers states, classifies blocks, traces flow, resolves opaque CMOVZ.|
+|`emulate_concrete`|Concrete emulation with seeded registers and memory. For hash verification and crypto identification.|
+
+Pattern matching is driven by `cff_techniques/` -- a pluggable database of dispatcher patterns (5: SubJzChain, CmpJeTable, SwitchJumpTable, IndirectComputed, PushRet), opaque predicates (4: LCG, Quadratic, MBA, ConstantFold), state variable detectors (4: StackFixed, StackAny, Global, Register), and obfuscator signatures (5: OLLVM, Hikari, LCG-CFF, Tigress, Themida).
 
 ## Performance
 

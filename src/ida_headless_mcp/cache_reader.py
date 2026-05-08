@@ -10,6 +10,7 @@ is the only communication channel.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ class CacheReader:
 
     def __init__(self, cache_dir: Path) -> None:
         self.cache_dir = cache_dir
+        self._queue_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # State
@@ -85,11 +87,12 @@ class CacheReader:
 
     def queue_decompile(self, sha256: str, address_or_name: str) -> None:
         """Append a decompile request to the worker queue."""
-        queue = self.cache_dir / sha256 / "request_queue.jsonl"
+        queue = self.cache_dir / sha256 / 'request_queue.jsonl'
         queue.parent.mkdir(parents=True, exist_ok=True)
-        entry = json.dumps({"type": "decompile", "target": address_or_name})
-        with queue.open("a", encoding="utf-8") as fh:
-            fh.write(entry + "\n")
+        entry = json.dumps({'type': 'decompile', 'target': address_or_name})
+        with self._queue_lock:
+            with queue.open('a', encoding='utf-8') as fh:
+                fh.write(entry + '\n')
 
     # ------------------------------------------------------------------
     # Index cache
@@ -121,11 +124,12 @@ class CacheReader:
 
     def queue_pattern(self, sha256: str, pattern_type: str) -> None:
         """Queue a pattern search request."""
-        queue = self.cache_dir / sha256 / "request_queue.jsonl"
+        queue = self.cache_dir / sha256 / 'request_queue.jsonl'
         queue.parent.mkdir(parents=True, exist_ok=True)
-        entry = json.dumps({"type": "search_pattern", "pattern_type": pattern_type})
-        with queue.open("a", encoding="utf-8") as fh:
-            fh.write(entry + "\n")
+        entry = json.dumps({'type': 'search_pattern', 'pattern_type': pattern_type})
+        with self._queue_lock:
+            with queue.open('a', encoding='utf-8') as fh:
+                fh.write(entry + '\n')
 
     # ------------------------------------------------------------------
     # Generic result cache
@@ -145,11 +149,21 @@ class CacheReader:
 
     def queue_request(self, sha256: str, tool_name: str, params: dict[str, Any]) -> None:
         """Queue a generic tool request for the worker."""
-        queue = self.cache_dir / sha256 / "request_queue.jsonl"
+        queue = self.cache_dir / sha256 / 'request_queue.jsonl'
         queue.parent.mkdir(parents=True, exist_ok=True)
-        entry = json.dumps({"type": tool_name, **params})
-        with queue.open("a", encoding="utf-8") as fh:
-            fh.write(entry + "\n")
+        entry = json.dumps({'type': tool_name, **params})
+        with self._queue_lock:
+            with queue.open('a', encoding='utf-8') as fh:
+                fh.write(entry + '\n')
+
+    def queue_write_mutation(self, sha256: str, mutation: dict[str, Any]) -> None:
+        """Queue a write mutation for the worker (patch_bytes, rename, etc)."""
+        queue = self.cache_dir / sha256 / 'write_queue.jsonl'
+        queue.parent.mkdir(parents=True, exist_ok=True)
+        entry = json.dumps(mutation)
+        with self._queue_lock:
+            with queue.open('a', encoding='utf-8') as fh:
+                fh.write(entry + '\n')
 
     def check_staleness(self, sha256: str, cache_file: Path) -> dict[str, Any]:
         """Check if a cached result is stale by comparing embedded generation.

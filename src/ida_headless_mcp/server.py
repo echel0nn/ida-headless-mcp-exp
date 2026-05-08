@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +32,11 @@ mcp = FastMCP(
 )
 
 
+import threading
+import time as _time
+
+
+
 class _Frontend:
     """Pure cache reader and lifecycle manager with zero IDA imports."""
 
@@ -46,6 +50,11 @@ class _Frontend:
         )
         self.lifecycle.recover_all()
         self._binaries: dict[str, dict[str, Any]] = {}
+        # Server-side task execution state
+        self._server_lock = threading.Lock()
+        self._server_inflight: dict[str, bool] = {}
+        from concurrent.futures import ThreadPoolExecutor
+        self._thread_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='srv')
         # Rebuild binary registry from recovered lifecycles
         for lc in self.lifecycle.all():
             self._binaries[lc.binary_id] = {
@@ -157,9 +166,72 @@ class _Frontend:
         return self._pending(binary_id, lc, worker_action)
 
 
-@lru_cache(maxsize=1)
+
+    def server_task(
+        self,
+        binary_id: str,
+        tool_name: str,
+        key: str,
+        func: Any,
+    ) -> dict[str, Any]:
+        """Return cached result or spawn in-process background computation.
+
+        Same contract as _cached_or_pending but runs func in a daemon
+        thread instead of queuing to a worker subprocess. For tools that
+        operate on raw PE bytes (CFF, string decrypt, capability scan).
+        """
+        sha = self._sha(binary_id)
+        cached = self.cache.get_result(sha, tool_name, key)
+        if cached:
+            cached['binary_id'] = binary_id
+            cached['status'] = 'ready'
+            return cached
+        task_key = f'{sha}:{tool_name}:{key}'
+        with self._server_lock:
+            if task_key in self._server_inflight:
+                return {'binary_id': binary_id, 'status': 'pending',
+                        'message': 'Computation in progress.'}
+            self._server_inflight[task_key] = True
+        safe_key = key.replace('/', '_').replace('\\', '_').replace(':', '_')
+        filename = f'{tool_name}_{safe_key}.json' if safe_key else f'{tool_name}.json'
+        result_dir = self.settings.cache_dir / sha / 'results'
+        result_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = result_dir / filename
+        def _bg():
+            try:
+                result = func()
+                if isinstance(result, dict):
+                    result['status'] = 'ready'
+                    tmp = cache_file.with_suffix('.tmp')
+                    tmp.write_text(
+                        json.dumps(result, indent=2, default=str),
+                        encoding='utf-8')
+                    os.replace(tmp, cache_file)
+            except (ValueError, RuntimeError, KeyError, TypeError, OSError) as exc:
+                err = {'status': 'error', 'error': str(exc)}
+                tmp = cache_file.with_suffix('.tmp')
+                tmp.write_text(json.dumps(err), encoding='utf-8')
+                os.replace(tmp, cache_file)
+            finally:
+                with self._server_lock:
+                    self._server_inflight.pop(task_key, None)
+        self._thread_pool.submit(_bg)
+        return {'binary_id': binary_id, 'status': 'pending',
+                'message': f'{tool_name} started. Poll again for result.'}
+
+_frontend_lock = threading.Lock()
+_frontend_instance: _Frontend | None = None
+
+
 def _fe() -> _Frontend:
-    return _Frontend()
+    """Thread-safe singleton accessor for the frontend."""
+    global _frontend_instance
+    if _frontend_instance is not None:
+        return _frontend_instance
+    with _frontend_lock:
+        if _frontend_instance is None:
+            _frontend_instance = _Frontend()
+    return _frontend_instance
 
 
 # ======================================================================
@@ -434,8 +506,9 @@ def worker_status() -> dict:
 def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dict:
     """Decompile a function by address or name.
 
-    Returns the cached result instantly or queues a background
-    decompilation and returns a pending status.
+    Returns cached pseudocode instantly, queues background decompilation,
+    or — when Hex-Rays returns None (e.g. CFF-obfuscated code) — falls
+    back to the CFF analysis pipeline automatically.
 
     Args:
         binary_id: Opaque handle from open_binary.
@@ -443,7 +516,9 @@ def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dic
         max_lines: Maximum pseudocode lines to return.
 
     Returns:
-        Decompilation result with pseudocode, or pending status.
+        Decompilation result with pseudocode.  When Hex-Rays fails, the
+        response includes ``cff_detection`` and ``cff_deflattened`` keys
+        with the recovered analysis instead.
     """
     fe = _fe()
     sha = fe._sha(binary_id)
@@ -451,6 +526,38 @@ def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dic
     if cached:
         cached["binary_id"] = binary_id
         cached["status"] = "ready"
+        # CFF fallback: if pseudocode is None, enrich with CFF analysis
+        pseudocode = cached.get('pseudocode')
+        if pseudocode is None or pseudocode == 'None':
+            try:
+                pe_path = fe._workspace_binary(sha)
+                ea = int(address_or_name, 16) if address_or_name.startswith('0x') else 0
+                if ea:
+                    # Check if CFF results already cached
+                    det_cached = fe.cache.get_result(sha, 'detect_cff', address_or_name)
+                    deflat_cached = fe.cache.get_result(sha, 'deflat_function', address_or_name)
+                    if det_cached and deflat_cached:
+                        # Instant: use cached CFF results
+                        cached['cff_detection'] = det_cached
+                        cached['cff_deflattened'] = deflat_cached
+                        cached['cff_fallback'] = True
+                        from .cff_pseudocode import emit_pseudocode
+                        name = cached.get('name', '')
+                        cached['pseudocode'] = emit_pseudocode(
+                            deflat_cached, name,
+                            cache_dir=fe.settings.cache_dir, sha=sha)
+                        cached['line_count'] = len(cached['pseudocode'].splitlines())
+                    else:
+                        # Spawn async deflat only — deflat calls detect internally.
+                        # Results cached separately for next poll.
+                        def _deflat_fn(p=pe_path, a=ea):
+                            from .cff_analysis import deflat_function
+                            return deflat_function(p, a)
+                        fe.server_task(binary_id, 'deflat_function',
+                                       address_or_name, _deflat_fn)
+                        cached['cff_fallback'] = 'pending'
+            except (FileNotFoundError, ValueError, KeyError, OSError):
+                pass
         return cached
     fe.cache.queue_decompile(sha, address_or_name)
     worker_action = fe.lifecycle.ensure_worker(binary_id)
@@ -839,6 +946,15 @@ def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> d
     fe.cache.queue_request(sha, tool_name, {"binary_id": binary_id, "_cache_key": key, **params})
     worker_action = fe.lifecycle.ensure_worker(binary_id)
     return fe._pending(binary_id, lc, worker_action)
+
+
+def _server_tool(tool_name: str, binary_id: str, key: str, func) -> dict:
+    """Generic dispatcher for server-side tools: cache hit or background thread.
+
+    Mirrors _ida_tool but runs func() in-process instead of queueing to a worker.
+    Used for tools that operate on raw PE bytes (CFF, decrypt, capability scan).
+    """
+    return _fe().server_task(binary_id, tool_name, key, func)
 
 
 @mcp.tool()
@@ -2033,6 +2149,465 @@ def miasm_emulate(
     result = _emulate(pe_path, ea, size=size, max_instructions=max_instructions)
     result["binary_id"] = binary_id
     return result
+
+
+# -----------------------------------------------------------------------
+# TOOLS — CFF analysis (server-side, instant, no worker needed)
+# -----------------------------------------------------------------------
+
+
+@mcp.tool()
+def disassemble_function(
+    binary_id: str,
+    address_or_name: str,
+) -> dict[str, Any]:
+    """Disassemble a complete function via miasm CFG recovery.
+
+    Returns the full control-flow graph with per-block feature extraction.
+    Uses dis_multiblock to follow all branches within the function.
+    Critical for CFF-obfuscated code where linear disassembly fails.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...).
+
+    Returns:
+        Blocks with instructions, edges, and topology stats.
+    """
+    fe = _fe()
+    pe_path = fe._workspace_binary(fe._sha(binary_id))
+    ea = int(address_or_name, 16)
+    def _compute():
+        from .cff_analysis import disassemble_function as _fn
+        r = _fn(pe_path, ea)
+        r.pop('_blocks_obj', None); r.pop('_addr_to_block', None)
+        return r
+    return _server_tool('disassemble_function', binary_id, address_or_name, _compute)
+
+
+@mcp.tool()
+def detect_control_flow_obfuscation(
+    binary_id: str,
+    address_or_name: str,
+) -> dict[str, Any]:
+    """Detect CFF obfuscation in a function.
+
+    Topology-based detection: finds dispatchers by abnormal in-degree,
+    identifies opaque predicates via pattern matching and simplification,
+    matches against known obfuscator signatures (OLLVM, Hikari, LCG-CFF, Tigress, Themida).
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...).
+
+    Returns:
+        CFF detection result with dispatcher, state variable, opaque predicates,
+        matched signature, and confidence.
+    """
+    fe = _fe()
+    pe_path = fe._workspace_binary(fe._sha(binary_id))
+    ea = int(address_or_name, 16)
+    def _compute():
+        from .cff_analysis import detect_cff as _fn
+        return _fn(pe_path, ea)
+    return _server_tool('detect_cff', binary_id, address_or_name, _compute)
+
+
+@mcp.tool()
+def deflat_function(
+    binary_id: str,
+    address_or_name: str,
+) -> dict[str, Any]:
+    """Deflat a CFF-obfuscated function.
+
+    Full deflattening pipeline: recovers the original control flow from
+    a flattened function. Returns classified blocks (real/trampoline/opaque),
+    state transition graph, recovered execution flow, and prologue analysis.
+
+    Combines miasm CFG recovery with the CFF technique database to handle
+    OLLVM, Hikari, LCG-CFF, Tigress, and Themida CFF variants.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...).
+
+    Returns:
+        Deflattened function with states, flow, calls, and block classification.
+    """
+    fe = _fe()
+    pe_path = fe._workspace_binary(fe._sha(binary_id))
+    ea = int(address_or_name, 16)
+    def _compute():
+        from .cff_analysis import deflat_function as _fn
+        return _fn(pe_path, ea)
+    return _server_tool('deflat_function', binary_id, address_or_name, _compute)
+
+
+@mcp.tool()
+def patch_cff(
+    binary_id: str,
+    address_or_name: str,
+) -> dict[str, Any]:
+    """Patch a CFF-obfuscated function to make it decompilable by Hex-Rays.
+
+    Runs disassemble + deflat, computes byte patches that replace dispatcher
+    jumps with direct handler-to-handler jumps, queues all patches as mutations.
+    After patches apply, decompile() should return clean pseudocode.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address_or_name: Function address (0x...).
+
+    Returns:
+        Patch summary with count and mutation tickets.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    ea = int(address_or_name, 16)
+    # Run disassembly and deflattening (from cache or compute)
+    from .cff_analysis import disassemble_function as _disasm
+    from .cff_analysis import detect_cff as _detect
+    cfg = _disasm(pe_path, ea)
+    det = _detect(pe_path, ea)
+    if not det.get('is_cff'):
+        return {'binary_id': binary_id, 'status': 'error',
+                'error': 'Function is not CFF-obfuscated'}
+    from .cff_analysis import deflat_function as _deflat
+    deflat = _deflat(pe_path, ea)
+    dispatcher_addr = det.get('dispatcher_address', '')
+    if isinstance(dispatcher_addr, str):
+        dispatcher_addr = int(dispatcher_addr, 16)
+    from .cff_patcher import compute_patches
+    patches = compute_patches(cfg['blocks'], deflat['states'], dispatcher_addr)
+    if not patches:
+        return {'binary_id': binary_id, 'status': 'error',
+                'error': 'No patches computed'}
+    # Queue all patches as mutations
+    tickets: list[dict] = []
+    for p in patches:
+        fe.cache.queue_write_mutation(sha, {
+            'type': 'patch_bytes',
+            'params': {'address': p['address'], 'hex_bytes': p['hex_bytes']},
+        })
+        tickets.append({'address': p['address'], 'description': p['description']})
+    # Ensure worker is alive to process mutations
+    fe.lifecycle.ensure_worker(binary_id)
+    # Invalidate decompile cache for this function
+    decompile_cache = fe.settings.cache_dir / sha / 'decompile'
+    for f in [decompile_cache / f'0x{ea:x}.json', decompile_cache / f'sub_{ea:X}.json']:
+        if f.exists():
+            f.unlink(missing_ok=True)
+    return {
+        'binary_id': binary_id,
+        'status': 'patches_queued',
+        'patch_count': len(patches),
+        'patches': tickets,
+        'message': f'{len(patches)} patches queued. Worker will apply them. Then call decompile() to get clean pseudocode.',
+    }
+
+@mcp.tool()
+def emulate_concrete(
+    binary_id: str,
+    address: str,
+    max_instructions: int = 100,
+    initial_registers: str = "",
+    initial_memory: str = "",
+) -> dict[str, Any]:
+    """Concrete emulation with seeded register and memory values.
+
+    Unlike symbolic emulation, this feeds real values to get real outputs.
+    Use for hash function verification, crypto algorithm identification,
+    and opaque predicate evaluation.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address: Virtual address to start emulation (0x...).
+        max_instructions: Stop after this many instructions.
+        initial_registers: JSON object mapping register names to int values.
+            Example: '{"RAX": 0, "RCX": 4919384}'
+        initial_memory: JSON object mapping hex addresses to hex byte strings.
+            Example: '{"0x140000000": "4B45524E454C33322E444C4C00"}'
+
+    Returns:
+        Final register state with concrete values where resolved.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    ea = int(address, 16)
+    regs = json.loads(initial_registers) if initial_registers else None
+    mem_raw = json.loads(initial_memory) if initial_memory else None
+    mem = None
+    if mem_raw:
+        mem = {int(k, 16): bytes.fromhex(v) for k, v in mem_raw.items()}
+    from .cff_analysis import emulate_concrete as _emulate
+    result = _emulate(pe_path, ea, max_instructions=max_instructions,
+                      initial_regs=regs, initial_memory=mem)
+    result["binary_id"] = binary_id
+    return result
+
+
+@mcp.tool()
+def batch_cff_scan(
+    binary_id: str,
+    min_blocks: int = 20,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Scan all functions for CFF obfuscation.
+
+    Server-side batch scan. For each function with at least ``min_blocks``
+    basic blocks, runs CFF detection and returns a summary.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        min_blocks: Skip functions smaller than this (CFF inflates block count).
+        limit: Maximum functions to scan.
+
+    Returns:
+        List of CFF-positive functions with signature, confidence, state count.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    def _compute():
+        from .cff_analysis import disassemble_function as _disasm, detect_cff as _detect
+        from .cff_helpers import _load_text_section, _detect_arch
+        import logging
+        logging.getLogger('asmblock').setLevel(logging.CRITICAL)
+        text_bytes, text_base, text_size = _load_text_section(pe_path)
+        if not text_bytes:
+            return {'error': 'Cannot locate .text section', 'functions': []}
+        idx = fe.cache.get_result(sha, 'function_index', '')
+        func_addrs = []
+        if idx and 'entries' in idx:
+            func_addrs = [int(e['address'], 16) for e in idx['entries']
+                          if e.get('address', '').startswith('0x')]
+        if not func_addrs:
+            return {'error': 'No function index. Run list_functions first.', 'functions': []}
+        results = []
+        scanned = 0
+        for addr in func_addrs:
+            if scanned >= limit:
+                break
+            if not (text_base <= addr < text_base + text_size):
+                continue
+            try:
+                cfg = _disasm(pe_path, addr)
+                bc = cfg.get('stats', {}).get('block_count', 0)
+                if bc < min_blocks:
+                    continue
+                scanned += 1
+                det = _detect(pe_path, addr)
+                if det.get('is_cff'):
+                    results.append({'address': f'0x{addr:x}', 'block_count': bc,
+                        'signature': det.get('matched_signature'),
+                        'confidence': det.get('confidence'),
+                        'opaque_count': len(det.get('opaque_predicates', []))})
+            except (ValueError, RuntimeError, KeyError, TypeError):
+                continue
+        return {'scanned': scanned, 'cff_positive': len(results), 'functions': results}
+    return _server_tool('batch_cff_scan', binary_id, f'{min_blocks}_{limit}', _compute)
+
+
+@mcp.tool()
+def decrypt_function_strings(
+    binary_id: str,
+    decryptor_address: str,
+    caller_address: str,
+    max_instructions: int = 500,
+) -> dict[str, Any]:
+    """Decrypt all encrypted strings in a single function.
+
+    Extracts CAST5/AES/Blowfish keys from the function prologue,
+    finds every call to the decryptor within the function's CFG,
+    resolves per-call key offset and ciphertext pointer, decrypts.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        decryptor_address: Address of the decryption function (0x...).
+        caller_address: Entry address of the function to scan (0x...).
+        max_instructions: Unused (kept for API compat).
+
+    Returns:
+        Per-call decrypted strings with cipher, key size, and plaintext.
+    """
+    fe = _fe()
+    pe_path = fe._workspace_binary(fe._sha(binary_id))
+    func_ea = int(caller_address, 16)
+    decryptor_ea = int(decryptor_address, 16)
+    def _compute():
+        from .string_decrypt import decrypt_all_strings as _fn
+        return _fn(pe_path, func_ea, decryptor_ea)
+    return _server_tool('decrypt_function_strings', binary_id,
+                        f'{caller_address}_{decryptor_address}', _compute)
+
+
+@mcp.tool()
+def build_call_tree(
+    binary_id: str,
+    root_address: str,
+    max_depth: int = 3,
+    max_functions: int = 20,
+) -> dict[str, Any]:
+    """Build a call tree from deflattened CFF functions.
+
+    Starting from a root function, deflats it, extracts call targets,
+    then recursively deflats those callees up to ``max_depth``.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        root_address: Root function address (0x...).
+        max_depth: Maximum recursion depth.
+        max_functions: Maximum total functions to deflat.
+
+    Returns:
+        Tree of deflattened functions with their call relationships.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    root_ea = int(root_address, 16)
+    def _compute():
+        from .cff_analysis import deflat_function as _deflat
+        tree = []
+        visited = set()
+        q = [(root_ea, 0)]
+        while q and len(tree) < max_functions:
+            addr, depth = q.pop(0)
+            if addr in visited or depth > max_depth:
+                continue
+            visited.add(addr)
+            try:
+                df = _deflat(pe_path, addr)
+            except (ValueError, RuntimeError, KeyError, TypeError):
+                continue
+            states = df.get('states', [])
+            calls = set()
+            for s in states:
+                for c in s.get('calls', []):
+                    if isinstance(c, str) and c.startswith('0x'):
+                        c = int(c, 16)
+                    if isinstance(c, int) and c > 0:
+                        calls.add(c)
+            tree.append({'address': f'0x{addr:x}', 'depth': depth,
+                         'state_count': len(states), 'callees': sorted(f'0x{c:x}' for c in calls)})
+            if depth < max_depth:
+                for c in calls:
+                    if c not in visited:
+                        q.append((c, depth + 1))
+        return {'root': root_address, 'functions_analyzed': len(tree), 'tree': tree}
+    return _server_tool('build_call_tree', binary_id,
+                        f'{root_address}_{max_depth}', _compute)
+
+
+@mcp.tool()
+def decrypt_binary_strings(
+    binary_id: str,
+    decryptor_address: str,
+) -> dict[str, Any]:
+    """Decrypt ALL encrypted strings across the entire binary.
+
+    Finds every function containing calls to the decryptor,
+    runs per-function decryption with prologue key extraction,
+    deduplicates by ciphertext address. Tries CAST-128, AES-128, Blowfish.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        decryptor_address: Address of the string decryption function (0x...).
+
+    Returns:
+        All decrypted strings with cipher detected, call addresses, and plaintext.
+    """
+    fe = _fe()
+    pe_path = fe._workspace_binary(fe._sha(binary_id))
+    decryptor_ea = int(decryptor_address, 16)
+    def _compute():
+        from .string_decrypt import decrypt_binary_strings as _fn
+        return _fn(pe_path, decryptor_ea)
+    return _server_tool('decrypt_binary_strings', binary_id,
+                        decryptor_address, _compute)
+
+
+@mcp.tool()
+def find_api_call_sites(
+    binary_id: str,
+    api_name: str,
+) -> dict[str, Any]:
+    """Find all call sites for a specific API in the binary.
+
+    Searches three resolution paths:
+    1. IAT direct: FF 15 calls to IAT slot
+    2. Thunk indirect: E8 calls to JMP [IAT] wrappers
+    3. Hash resolved: Custom hash constants in .rdata
+
+    Handles ordinal imports (WS2_32, OLEAUT32).
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        api_name: API function name (e.g. 'TerminateProcess', 'socket').
+
+    Returns:
+        Call site addresses, IAT address, thunk address, hash locations.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    from .api_tracer import find_api_call_sites as _find
+    result = _find(pe_path, api_name)
+    result['binary_id'] = binary_id
+    return result
+
+
+@mcp.tool()
+def trace_hash_xrefs(
+    binary_id: str,
+    api_name: str,
+) -> dict[str, Any]:
+    """Find which functions reference a hash constant for a dynamically resolved API.
+
+    Computes the API hash, finds it in .rdata, then scans .text for
+    instructions that reference that address. Returns xref locations.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        api_name: API function name to trace.
+
+    Returns:
+        Hash value, .rdata locations, and xref instruction addresses.
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    from .api_tracer import trace_hash_xrefs as _trace
+    result = _trace(pe_path, api_name)
+    result['binary_id'] = binary_id
+    return result
+
+
+@mcp.tool()
+def verify_capabilities(
+    binary_id: str,
+) -> dict[str, Any]:
+    """Scan binary APIs and classify into capabilities from database.
+
+    Enumerates all APIs the binary actually uses (imports, thunks, hash
+    table), then classifies using ``data/api_categories.json``. The
+    database is editable — add new APIs/categories without code changes.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+
+    Returns:
+        Per-capability verdict (confirmed/absent) with API evidence.
+        Includes uncategorized APIs that don't match any known category.
+    """
+    fe = _fe()
+    pe_path = fe._workspace_binary(fe._sha(binary_id))
+    def _compute():
+        from .api_tracer import classify_capabilities as _fn
+        return _fn(pe_path)
+    return _server_tool('verify_capabilities', binary_id, '', _compute)
 
 
 def create_server() -> FastMCP:

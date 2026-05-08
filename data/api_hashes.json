@@ -1,0 +1,143 @@
+{
+  "_meta": {
+    "description": "Malware API hashing algorithm database. Each algorithm has metadata + implementation key. The api_hashes.py module implements the actual hash functions referenced by 'impl' field.",
+    "sources": "HashDB (OALabs), MITRE ATT&CK T1027.007, public malware analysis"
+  },
+  "algorithms": [
+    {
+      "name": "crc32",
+      "impl": "crc32",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": true,
+      "description": "Standard CRC32 with null terminator appended",
+      "seen_in": ["Various ransomware", "Emotet variants"]
+    },
+    {
+      "name": "crc32_no_null",
+      "impl": "crc32_no_null",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "CRC32 without null terminator",
+      "seen_in": ["Custom loaders"]
+    },
+    {
+      "name": "djb2",
+      "impl": "djb2",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "Bernstein hash: h = h * 33 + c, init 5381",
+      "seen_in": ["GuLoader", "Various"]
+    },
+    {
+      "name": "djb2a",
+      "impl": "djb2a",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "DJB2a variant: h = (h ^ c) * 33, init 5381",
+      "seen_in": ["TONESHELL variants"]
+    },
+    {
+      "name": "sdbm",
+      "impl": "sdbm",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "SDBM: h = c + (h << 6) + (h << 16) - h",
+      "seen_in": ["Various"]
+    },
+    {
+      "name": "fnv1a_32",
+      "impl": "fnv1a_32",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "FNV-1a 32-bit: h = (h ^ c) * 0x01000193, basis 0x811C9DC5",
+      "seen_in": ["Cobalt Strike", "Various APT"]
+    },
+    {
+      "name": "fnv1a_64",
+      "impl": "fnv1a_64",
+      "bits": 64,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "FNV-1a 64-bit: h = (h ^ c) * 0x00000100000001B3, basis 0xCBF29CE484222325",
+      "seen_in": ["64-bit malware"]
+    },
+    {
+      "name": "ror13",
+      "impl": "ror13",
+      "bits": 32,
+      "case_sensitive": false,
+      "null_terminate": false,
+      "description": "Rotate right 13 + add: h = ror(h,13) + c",
+      "seen_in": ["Metasploit shellcode", "Many APT"]
+    },
+    {
+      "name": "ror13_additive",
+      "impl": "ror13_additive",
+      "bits": 32,
+      "case_sensitive": false,
+      "null_terminate": false,
+      "description": "ROR13 with module+API combined: module_hash + api_hash",
+      "seen_in": ["Metasploit", "Cobalt Strike"]
+    },
+    {
+      "name": "ror13_seeded",
+      "impl": "ror13_seeded",
+      "bits": 32,
+      "case_sensitive": false,
+      "null_terminate": false,
+      "description": "Seeded ROR13: h starts from seed, not 0",
+      "seen_in": ["BlackMatter"]
+    },
+    {
+      "name": "mul37_tolower",
+      "impl": "mul37_tolower",
+      "bits": 32,
+      "case_sensitive": false,
+      "null_terminate": false,
+      "description": "h = h * 37 + tolower(c), init 0",
+      "seen_in": ["LCG-CFF variant"]
+    },
+    {
+      "name": "add_ror_custom",
+      "impl": "add_ror_custom",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "h = ror(h, N) + c with custom rotation count",
+      "seen_in": ["Emotet", "Custom"]
+    },
+    {
+      "name": "imul_prime",
+      "impl": "imul_prime",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "h = h * prime + c with various primes (31, 37, 131, 1313)",
+      "seen_in": ["APT28/Sofacy"]
+    },
+    {
+      "name": "xor_shift",
+      "impl": "xor_shift",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "h = (h ^ c) + (h << 5) or similar XOR+shift combo",
+      "seen_in": ["Custom malware"]
+    },
+    {
+      "name": "murmur2_32",
+      "impl": "murmur2_32",
+      "bits": 32,
+      "case_sensitive": true,
+      "null_terminate": false,
+      "description": "MurmurHash2 32-bit with seed 0",
+      "seen_in": ["Sophisticated malware"]
+    }
+  ]
+}
