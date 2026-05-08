@@ -95,6 +95,11 @@ class LifecycleManager:
         # Arbiter state
         self._arbiter_started = False
         self._arbiter_lock = threading.Lock()
+        # Guards _worker_procs, _worker_activity, _crash_counts
+        # against concurrent access from arbiter thread + main thread
+        self._state_lock = threading.Lock()
+        # Worker crash tracking
+        self._crash_counts: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Arbiter (supervisor thread)
@@ -121,93 +126,91 @@ class LifecycleManager:
 
     def _arbiter_tick(self) -> None:
         """One supervisor cycle: reconcile, reap, spawn."""
-        # 0. Reconcile ANALYZING binaries — promote to READY when .i64 appears
-        for lc in list(self._lifecycles.values()):
-            if lc.state == BinaryState.ANALYZING:
-                self._reconcile(lc)
+        with self._state_lock:
+            # 0. Reconcile ANALYZING binaries
+            for lc in list(self._lifecycles.values()):
+                if lc.state == BinaryState.ANALYZING:
+                    self._reconcile(lc)
 
-        # 1. Reap dead workers
-        dead_shas = []
-        for sha, proc in list(self._worker_procs.items()):
-            if proc.poll() is not None:
-                dead_shas.append(sha)
-        for sha in dead_shas:
-            del self._worker_procs[sha]
-            self._worker_activity.pop(sha, None)
-            hb = self.cache_dir / sha / "worker_heartbeat.json"
-            if hb.exists():
-                try:
-                    hb.unlink()
-                except OSError:
-                    pass  # Best-effort cleanup
+            # 1. Reap dead workers and count crashes
+            dead_shas = []
+            for sha, proc in list(self._worker_procs.items()):
+                if proc.poll() is not None:
+                    dead_shas.append((sha, proc.returncode))
+            for sha, exit_code in dead_shas:
+                del self._worker_procs[sha]
+                self._worker_activity.pop(sha, None)
+                if exit_code != 0:
+                    self._crash_counts[sha] = self._crash_counts.get(sha, 0) + 1
+                    self._persist_crash_counts()
+                hb = self.cache_dir / sha / 'worker_heartbeat.json'
+                if hb.exists():
+                    try:
+                        hb.unlink()
+                    except OSError:
+                        pass  # Best-effort cleanup
 
-        # 2. Find binaries that need workers (READY+ with pending queue)
-        needs_worker: list[BinaryLifecycle] = []
-        for lc in self._lifecycles.values():
-            if lc.state < BinaryState.READY:
-                continue
-            # Check if worker is ACTUALLY alive (not just tracked)
-            existing = self._worker_procs.get(lc.sha256)
-            if existing is not None:
-                if existing.poll() is None:
-                    continue  # Truly alive, skip
-                # Dead but tracked — clean up now
-                del self._worker_procs[lc.sha256]
-                self._worker_activity.pop(lc.sha256, None)
-            # Check queue
-            queue = self.cache_dir / lc.sha256 / "request_queue.jsonl"
-            if queue.exists():
+            # 2. Find binaries that need workers (READY+ with pending queue)
+            needs_worker: list[BinaryLifecycle] = []
+            for lc in self._lifecycles.values():
+                if lc.state < BinaryState.READY:
+                    continue
+                if self._crash_counts.get(lc.sha256, 0) >= self._MAX_WORKER_CRASHES:
+                    continue
+                existing = self._worker_procs.get(lc.sha256)
+                if existing is not None:
+                    if existing.poll() is None:
+                        continue
+                    del self._worker_procs[lc.sha256]
+                    self._worker_activity.pop(lc.sha256, None)
+                # Check both queues (requests + write mutations)
+                sha_dir = self.cache_dir / lc.sha256
                 try:
-                    text = queue.read_text(encoding="utf-8").strip()
-                    if text:
+                    has_work = any(
+                        (sha_dir / q).exists() and (sha_dir / q).stat().st_size > 0
+                        for q in ('request_queue.jsonl', 'write_queue.jsonl'))
+                    if has_work:
                         needs_worker.append(lc)
                 except OSError:
-                    pass  # Best-effort queue probe
+                    pass
 
-        if not needs_worker:
-            return
+            if not needs_worker:
+                return
 
-        # 3. Enforce max_workers — count alive workers
-        alive_count = sum(1 for p in self._worker_procs.values() if p.poll() is None)
+            # 3. Enforce max_workers
+            alive_count = sum(1 for p in self._worker_procs.values() if p.poll() is None)
 
-        # 4. Spawn workers (staggered)
-        for lc in needs_worker:
-            if alive_count >= self.max_workers:
-                # Evict LRU
-                if not self._worker_procs:
-                    break
-                alive_procs = {s: p for s, p in self._worker_procs.items() if p.poll() is None}
-                if not alive_procs:
-                    break
-                lru_sha = min(alive_procs.keys(), key=lambda s: self._worker_activity.get(s, 0))
-                self._evict_worker(lru_sha)
-                alive_count -= 1
+            # 4. Collect spawn + eviction targets (Popen/terminate happen outside lock)
+            to_evict: list[tuple[str, subprocess.Popen]] = []
+            to_spawn: list[BinaryLifecycle] = []
+            for lc in needs_worker:
+                if alive_count >= self.max_workers:
+                    if not self._worker_procs:
+                        break
+                    alive_procs = {s: p for s, p in self._worker_procs.items() if p.poll() is None}
+                    if not alive_procs:
+                        break
+                    lru_sha = min(alive_procs.keys(), key=lambda s: self._worker_activity.get(s, 0))
+                    proc = self._worker_procs.pop(lru_sha, None)
+                    self._worker_activity.pop(lru_sha, None)
+                    if proc:
+                        to_evict.append((lru_sha, proc))
+                    alive_count -= 1
+                to_spawn.append(lc)
+                alive_count += 1  # optimistic; corrected if spawn fails
 
-            if self._do_spawn(lc):
-                alive_count += 1
-
-
-    def _evict_worker(self, sha256: str) -> None:
-        """Terminate a worker to make room for a new one."""
-        proc = self._worker_procs.get(sha256)
-        if proc is None:
-            return
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
+        # Blocking operations outside _state_lock
+        for sha, proc in to_evict:
             try:
-                proc.kill()
-            except OSError:
-                pass  # Best-effort kill; process may already be dead
-        self._worker_procs.pop(sha256, None)
-        self._worker_activity.pop(sha256, None)
-        for lc in self._lifecycles.values():
-            if lc.sha256 == sha256:
-                lc.state = BinaryState.READY
-                lc.decompile_worker_pid = None
-                self._save(lc)
-                break
+                proc.terminate()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        for lc in to_spawn:
+            self._do_spawn(lc)  # Popen + register under its own lock acquisition
 
     # ------------------------------------------------------------------
     # Worker spawning
@@ -240,17 +243,19 @@ class LifecycleManager:
             # but crashing when spawned from the MCP server (stdin=JSON-RPC pipe).
             proc = subprocess.Popen(
                 [
-                    sys.executable, "-m", "ida_headless_mcp.binary_worker",
-                    "--sha256", lc.sha256,
-                    "--cache-dir", str(self.cache_dir),
+                    sys.executable, '-m', 'ida_headless_mcp.binary_worker',
+                    '--sha256', lc.sha256,
+                    '--cache-dir', str(self.cache_dir),
                 ],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 cwd=src_dir,
                 env=env,
             )
-            self._worker_procs[lc.sha256] = proc
-            self._worker_activity[lc.sha256] = time.monotonic()
+            # Register under lock — Popen already finished (non-blocking)
+            with self._state_lock:
+                self._worker_procs[lc.sha256] = proc
+                self._worker_activity[lc.sha256] = time.monotonic()
             lc.decompile_worker_pid = proc.pid
             self._save(lc)
             return True
@@ -270,55 +275,41 @@ class LifecycleManager:
         self._start_arbiter()
         lc = self._lifecycles.get(binary_id)
         if not lc or lc.state < BinaryState.READY:
-            return "not_ready"
+            return 'not_ready'
+        with self._state_lock:
+            proc = self._worker_procs.get(lc.sha256)
+            if proc is not None and proc.poll() is None:
+                self._worker_activity[lc.sha256] = time.monotonic()
+                return 'alive'
+        return 'queued'
 
-        # Check if already alive
-        proc = self._worker_procs.get(lc.sha256)
-        if proc is not None and proc.poll() is None:
-            self._worker_activity[lc.sha256] = time.monotonic()
-            return "alive"
-
-        # Arbiter will pick it up on next tick
-        return "queued"
+    _MAX_WORKER_CRASHES = 3
 
     def _worker_is_alive(self, lc: BinaryLifecycle) -> bool:
-        """Check if a worker is running for this binary."""
+        """Check if a worker is running (read-only, no mutations).
+
+        The arbiter handles crash counting and restarts. This method
+        is called from the server's main thread for diagnostics only.
+        """
         proc = self._worker_procs.get(lc.sha256)
         if proc is not None:
-            if proc.poll() is None:
-                return True
-            # Dead — clean up
-            del self._worker_procs[lc.sha256]
-            self._worker_activity.pop(lc.sha256, None)
-            return False
+            return proc.poll() is None
 
         # Check heartbeat for workers from prior server session
-        hb_path = self.cache_dir / lc.sha256 / "worker_heartbeat.json"
+        hb_path = self.cache_dir / lc.sha256 / 'worker_heartbeat.json'
         if not hb_path.exists():
             return False
         try:
-            hb = json.loads(hb_path.read_text(encoding="utf-8"))
-            age = time.time() - hb.get("timestamp", 0)
-            pid = hb.get("pid", 0)
-            status = hb.get("status", "")
-
-            if status.startswith("exiting"):
-                hb_path.unlink(missing_ok=True)
+            hb = json.loads(hb_path.read_text(encoding='utf-8'))
+            age = time.time() - hb.get('timestamp', 0)
+            pid = hb.get('pid', 0)
+            status = hb.get('status', '')
+            if status.startswith('exiting'):
                 return False
             if age > 30:
-                if pid and _pid_alive(pid):
-                    return True
-                hb_path.unlink(missing_ok=True)
-                return False
-            if pid and _pid_alive(pid):
-                return True
-            hb_path.unlink(missing_ok=True)
-            return False
+                return bool(pid and _pid_alive(pid))
+            return bool(pid and _pid_alive(pid))
         except (json.JSONDecodeError, OSError, KeyError):
-            try:
-                hb_path.unlink(missing_ok=True)
-            except OSError:
-                pass  # Best-effort cleanup; heartbeat file may already be gone
             return False
 
     # ------------------------------------------------------------------
@@ -341,6 +332,16 @@ class LifecycleManager:
             return BinaryLifecycle.from_dict(json.loads(path.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, KeyError, OSError):
             return None
+
+    def _persist_crash_counts(self) -> None:
+        """Save crash counts to disk for durability across restarts."""
+        try:
+            path = self.cache_dir / 'crash_counts.json'
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(json.dumps(self._crash_counts), encoding='utf-8')
+            os.replace(tmp, path)
+        except OSError:
+            pass  # best-effort
 
     # ------------------------------------------------------------------
     # Registration
@@ -458,8 +459,8 @@ class LifecycleManager:
             self._wait_for_analysis(lc, timeout=600)
         return lc
 
-    def _wait_for_analysis(self, lc: BinaryLifecycle, timeout: float = 600) -> None:
-        """Block until .i64 appears or timeout."""
+    def _wait_for_analysis(self, lc: BinaryLifecycle, timeout: float = 30) -> None:
+        """Block until .i64 appears or timeout. Default 30s, not 600s."""
         workspace = self.cache_dir / lc.sha256 / "workspace"
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -478,9 +479,9 @@ class LifecycleManager:
 
     def recover_all(self) -> list[BinaryLifecycle]:
         """Scan cache for persisted binary states and recover them."""
-        self._start_arbiter()
         recovered = []
         if not self.cache_dir.exists():
+            self._start_arbiter()
             return recovered
         for sha_dir in self.cache_dir.iterdir():
             if not sha_dir.is_dir() or len(sha_dir.name) != 64:
@@ -490,6 +491,15 @@ class LifecycleManager:
                 self._reconcile(lc)
                 self._lifecycles[lc.binary_id] = lc
                 recovered.append(lc)
+        # Load persisted crash counts
+        crash_file = self.cache_dir / 'crash_counts.json'
+        if crash_file.exists():
+            try:
+                self._crash_counts = json.loads(crash_file.read_text(encoding='utf-8'))
+            except (json.JSONDecodeError, OSError):
+                pass  # start fresh
+        # Start arbiter AFTER _lifecycles is populated
+        self._start_arbiter()
         # Arbiter will handle spawning workers for pending queues
         return recovered
 
@@ -529,7 +539,7 @@ def _pid_alive(pid: int) -> bool:
                 return exit_code.value == 259
             finally:
                 kernel32.CloseHandle(handle)
-        except Exception:
+        except (OSError, ValueError, ctypes.WinError if hasattr(ctypes, 'WinError') else OSError):
             return False
     else:
         try:

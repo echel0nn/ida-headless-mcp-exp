@@ -1,0 +1,194 @@
+{
+  "_meta": {
+    "description": "API-to-capability classification database. Editable, not hardcoded.",
+    "format": "category -> list of API names (case-insensitive match)"
+  },
+  "file_io": [
+    "CreateFileA", "CreateFileW", "ReadFile", "WriteFile", "DeleteFileA", "DeleteFileW",
+    "CopyFileA", "CopyFileW", "MoveFileA", "MoveFileW", "MoveFileExA", "MoveFileExW",
+    "FindFirstFileA", "FindFirstFileW", "FindFirstFileExA", "FindFirstFileExW",
+    "FindNextFileA", "FindNextFileW", "FindClose",
+    "GetFileAttributesA", "GetFileAttributesW", "SetFileAttributesA", "SetFileAttributesW",
+    "GetFileSize", "GetFileSizeEx", "SetFilePointer", "SetFilePointerEx",
+    "FlushFileBuffers", "LockFile", "UnlockFile",
+    "NtCreateFile", "NtReadFile", "NtWriteFile", "NtDeleteFile",
+    "fopen", "fread", "fwrite", "fclose", "fgets", "fputs", "fprintf"
+  ],
+  "directory": [
+    "CreateDirectoryA", "CreateDirectoryW", "RemoveDirectoryA", "RemoveDirectoryW",
+    "GetCurrentDirectoryA", "GetCurrentDirectoryW", "SetCurrentDirectoryA", "SetCurrentDirectoryW",
+    "SHFileOperationA", "SHFileOperationW"
+  ],
+  "process_create": [
+    "CreateProcessA", "CreateProcessW", "CreateProcessAsUserA", "CreateProcessAsUserW",
+    "CreateProcessWithLogonW", "CreateProcessWithTokenW",
+    "WinExec", "ShellExecuteA", "ShellExecuteW", "ShellExecuteExA", "ShellExecuteExW",
+    "NtCreateProcess", "NtCreateProcessEx", "NtCreateUserProcess", "RtlCreateUserProcess",
+    "system", "_wsystem"
+  ],
+  "process_enum": [
+    "CreateToolhelp32Snapshot", "Process32First", "Process32FirstW", "Process32Next", "Process32NextW",
+    "EnumProcesses", "NtQuerySystemInformation", "NtQueryInformationProcess",
+    "WTSEnumerateProcessesA", "WTSEnumerateProcessesW"
+  ],
+  "process_inject": [
+    "OpenProcess", "VirtualAllocEx", "WriteProcessMemory", "ReadProcessMemory",
+    "NtAllocateVirtualMemory", "NtWriteVirtualMemory", "NtReadVirtualMemory",
+    "CreateRemoteThread", "CreateRemoteThreadEx", "NtCreateThreadEx",
+    "QueueUserAPC", "NtQueueApcThread", "NtQueueApcThreadEx2",
+    "SetThreadContext", "GetThreadContext", "NtSetContextThread", "NtGetContextThread",
+    "NtSetInformationThread", "NtResumeThread", "NtSuspendThread",
+    "RtlCreateUserThread"
+  ],
+  "dll_load": [
+    "LoadLibraryA", "LoadLibraryW", "LoadLibraryExA", "LoadLibraryExW",
+    "GetProcAddress", "GetModuleHandleA", "GetModuleHandleW",
+    "LdrLoadDll", "LdrGetProcedureAddress",
+    "FreeLibrary"
+  ],
+  "process_terminate": [
+    "TerminateProcess", "TerminateThread", "ExitProcess", "ExitThread",
+    "NtTerminateProcess", "NtTerminateThread"
+  ],
+  "screenshot": [
+    "BitBlt", "StretchBlt", "GetDC", "GetWindowDC", "ReleaseDC",
+    "CreateCompatibleDC", "CreateCompatibleBitmap", "SelectObject", "DeleteDC", "DeleteObject",
+    "GetDIBits", "SetDIBits", "CreateDIBSection",
+    "GetDesktopWindow", "GetSystemMetrics", "PrintWindow",
+    "GetForegroundWindow", "GetClientRect", "GetWindowRect"
+  ],
+  "keylogger": [
+    "SetWindowsHookExA", "SetWindowsHookExW", "UnhookWindowsHookEx",
+    "GetAsyncKeyState", "GetKeyState", "GetKeyboardState",
+    "MapVirtualKeyA", "MapVirtualKeyW", "GetKeyNameTextA", "GetKeyNameTextW",
+    "RegisterRawInputDevices", "GetRawInputData"
+  ],
+  "clipboard": [
+    "OpenClipboard", "GetClipboardData", "SetClipboardData", "EmptyClipboard", "CloseClipboard",
+    "IsClipboardFormatAvailable", "EnumClipboardFormats"
+  ],
+  "credential_access": [
+    "CredEnumerateA", "CredEnumerateW", "CredReadA", "CredReadW",
+    "CryptUnprotectData", "CryptProtectData",
+    "LsaEnumerateLogonSessions", "LsaGetLogonSessionData",
+    "MiniDumpWriteDump", "NtReadVirtualMemory",
+    "SamConnect", "SamEnumerateUsersInDomain",
+    "DuplicateToken", "DuplicateTokenEx"
+  ],
+  "token_privilege": [
+    "OpenProcessToken", "OpenThreadToken",
+    "AdjustTokenPrivileges", "LookupPrivilegeValueA", "LookupPrivilegeValueW",
+    "ImpersonateLoggedOnUser", "ImpersonateNamedPipeClient",
+    "SetThreadToken", "RevertToSelf",
+    "NtOpenProcessToken", "NtAdjustPrivilegesToken"
+  ],
+  "registry": [
+    "RegOpenKeyExA", "RegOpenKeyExW", "RegCreateKeyExA", "RegCreateKeyExW",
+    "RegSetValueExA", "RegSetValueExW", "RegQueryValueExA", "RegQueryValueExW",
+    "RegDeleteKeyA", "RegDeleteKeyW", "RegDeleteValueA", "RegDeleteValueW",
+    "RegEnumKeyExA", "RegEnumKeyExW", "RegEnumValueA", "RegEnumValueW",
+    "RegCloseKey",
+    "NtOpenKey", "NtCreateKey", "NtSetValueKey", "NtQueryValueKey", "NtDeleteKey"
+  ],
+  "service": [
+    "OpenSCManagerA", "OpenSCManagerW",
+    "CreateServiceA", "CreateServiceW",
+    "OpenServiceA", "OpenServiceW",
+    "StartServiceA", "StartServiceW",
+    "ControlService", "DeleteService",
+    "ChangeServiceConfigA", "ChangeServiceConfigW"
+  ],
+  "named_pipe": [
+    "CreateNamedPipeA", "CreateNamedPipeW",
+    "ConnectNamedPipe", "DisconnectNamedPipe",
+    "WaitNamedPipeA", "WaitNamedPipeW",
+    "TransactNamedPipe", "PeekNamedPipe",
+    "CallNamedPipeA", "CallNamedPipeW",
+    "ImpersonateNamedPipeClient"
+  ],
+  "socket_raw": [
+    "socket", "bind", "listen", "accept", "connect",
+    "send", "recv", "sendto", "recvfrom",
+    "setsockopt", "getsockopt", "closesocket", "shutdown",
+    "select", "WSAStartup", "WSACleanup", "WSASocketW",
+    "WSASend", "WSARecv", "WSASendTo", "WSARecvFrom",
+    "getaddrinfo", "gethostbyname", "inet_addr", "inet_ntoa",
+    "htons", "ntohs", "htonl", "ntohl"
+  ],
+  "http_api": [
+    "InternetOpenA", "InternetOpenW", "InternetConnectA", "InternetConnectW",
+    "HttpOpenRequestA", "HttpOpenRequestW", "HttpSendRequestA", "HttpSendRequestW",
+    "InternetReadFile", "InternetWriteFile", "InternetCloseHandle",
+    "InternetOpenUrlA", "InternetOpenUrlW",
+    "WinHttpOpen", "WinHttpConnect", "WinHttpOpenRequest",
+    "WinHttpSendRequest", "WinHttpReceiveResponse", "WinHttpReadData",
+    "WinHttpCloseHandle",
+    "URLDownloadToFileA", "URLDownloadToFileW",
+    "URLDownloadToCacheFileA", "URLDownloadToCacheFileW"
+  ],
+  "dns": [
+    "DnsQuery_A", "DnsQuery_W", "DnsQueryEx",
+    "getaddrinfo", "GetAddrInfoW", "gethostbyname", "getnameinfo"
+  ],
+  "network_enum": [
+    "GetAdaptersInfo", "GetAdaptersAddresses",
+    "GetIpAddrTable", "GetIpNetTable",
+    "GetTcpTable", "GetUdpTable",
+    "NetShareEnum", "WNetAddConnection2A", "WNetAddConnection2W",
+    "WNetEnumResourceA", "WNetEnumResourceW"
+  ],
+  "crypto": [
+    "CryptAcquireContextA", "CryptAcquireContextW",
+    "CryptEncrypt", "CryptDecrypt", "CryptGenKey", "CryptDeriveKey",
+    "CryptHashData", "CryptCreateHash", "CryptDestroyHash",
+    "CryptImportKey", "CryptExportKey",
+    "BCryptOpenAlgorithmProvider", "BCryptEncrypt", "BCryptDecrypt",
+    "BCryptGenerateSymmetricKey", "BCryptHashData"
+  ],
+  "anti_debug": [
+    "IsDebuggerPresent", "CheckRemoteDebuggerPresent",
+    "NtQueryInformationProcess", "OutputDebugStringA", "OutputDebugStringW",
+    "QueryPerformanceCounter", "GetTickCount", "GetTickCount64",
+    "NtSetInformationThread"
+  ],
+  "timestomp": [
+    "SetFileTime", "GetFileTime",
+    "NtSetInformationFile", "NtQueryInformationFile",
+    "SetFileInformationByHandle"
+  ],
+  "cleanup": [
+    "RemoveDirectoryA", "RemoveDirectoryW",
+    "DeleteFileA", "DeleteFileW",
+    "SHFileOperationA", "SHFileOperationW",
+    "GetDiskFreeSpaceExA", "GetDiskFreeSpaceExW",
+    "MoveFileExW"
+  ],
+  "thread": [
+    "CreateThread", "ExitThread", "_beginthreadex",
+    "WaitForSingleObject", "WaitForMultipleObjects",
+    "SuspendThread", "ResumeThread",
+    "GetCurrentThreadId", "GetThreadId"
+  ],
+  "sync": [
+    "CreateMutexA", "CreateMutexW", "OpenMutexA", "OpenMutexW", "ReleaseMutex",
+    "CreateEventA", "CreateEventW", "SetEvent", "ResetEvent",
+    "InitializeCriticalSection", "EnterCriticalSection", "LeaveCriticalSection",
+    "CreateSemaphoreA", "CreateSemaphoreW"
+  ],
+  "system_info": [
+    "GetComputerNameA", "GetComputerNameW", "GetComputerNameExA", "GetComputerNameExW",
+    "GetUserNameA", "GetUserNameW",
+    "GetVersionExA", "GetVersionExW", "GetSystemInfo", "GetNativeSystemInfo",
+    "GetModuleFileNameA", "GetModuleFileNameW",
+    "GetCurrentProcessId", "GetCurrentProcess",
+    "GetWindowsDirectoryA", "GetWindowsDirectoryW",
+    "GetSystemDirectoryA", "GetSystemDirectoryW",
+    "GetEnvironmentVariableA", "GetEnvironmentVariableW",
+    "IsWow64Process"
+  ],
+  "gui_stealth": [
+    "GetMessageA", "GetMessageW", "DispatchMessageA", "DispatchMessageW",
+    "TranslateMessage", "ShowWindow", "GetConsoleWindow",
+    "GetForegroundWindow", "SetWindowPos"
+  ]
+}
