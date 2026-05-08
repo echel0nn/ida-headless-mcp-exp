@@ -70,21 +70,27 @@ def _read_bytes_at_va(pe_path: Path, va: int, size: int) -> bytes | None:
 
 
 def _detect_arch(pe_path: Path) -> str:
-    """Detect architecture from PE machine field."""
+    """Detect architecture from binary headers. Supports PE, ELF, Mach-O."""
     data = pe_path.read_bytes()
-    if len(data) < 0x40:
-        return "x86_64"
-    e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
-    if e_lfanew + 6 > len(data):
-        return "x86_64"
-    machine = struct.unpack_from("<H", data, e_lfanew + 4)[0]
-    arch_map = {
-        0x14C: "x86_32",
-        0x8664: "x86_64",
-        0x1C0: "arml",
-        0xAA64: "aarch64l",
-    }
-    return arch_map.get(machine, "x86_64")
+    if len(data) < 4:
+        return ''
+    if data[:4] == b'\x7fELF' and len(data) >= 20:
+        e_machine = struct.unpack_from('<H', data, 18)[0]
+        return {0x03: 'x86_32', 0x3E: 'x86_64', 0x28: 'arml',
+                0xB7: 'aarch64l'}.get(e_machine, '')
+    if data[:2] == b'MZ' and len(data) >= 0x40:
+        e_lfanew = struct.unpack_from('<I', data, 0x3C)[0]
+        if e_lfanew + 6 <= len(data):
+            machine = struct.unpack_from('<H', data, e_lfanew + 4)[0]
+            return {0x14C: 'x86_32', 0x8664: 'x86_64',
+                    0x1C0: 'arml', 0xAA64: 'aarch64l'}.get(machine, '')
+    if len(data) >= 8:
+        magic = struct.unpack_from('<I', data, 0)[0]
+        if magic in (0xFEEDFACE, 0xFEEDFACF):
+            cputype = struct.unpack_from('<I', data, 4)[0]
+            return {7: 'x86_32', 0x01000007: 'x86_64',
+                    12: 'arml', 0x0100000C: 'aarch64l'}.get(cputype, '')
+    return ''
 
 
 def miasm_disassemble(
@@ -269,6 +275,7 @@ def miasm_emulate_snippet(
     arch: str = "",
     max_instructions: int = 100,
     initial_regs: dict[str, int] | None = None,
+    initial_memory: dict[int, bytes] | None = None,
 ) -> dict[str, Any]:
     """Emulate a code snippet using miasm's symbolic execution engine.
 
@@ -283,6 +290,8 @@ def miasm_emulate_snippet(
         arch: Architecture override.
         max_instructions: Stop after this many instructions.
         initial_regs: Optional concrete register values to set before execution.
+        initial_memory: Optional concrete memory values to set before execution,
+            mapping virtual address to a bytes payload written one byte at a time.
 
     Returns:
         Dict with final symbolic state of registers.
@@ -318,12 +327,15 @@ def miasm_emulate_snippet(
     # Run symbolic execution
     sb = SymbolicExecutionEngine(lifter)
 
-    # Set initial register values if provided
-    if initial_regs:
-        from miasm.expression.expression import ExprId, ExprInt
-        for reg_name, value in initial_regs.items():
-            reg = ExprId(reg_name, 64)
-            sb.symbols[reg] = ExprInt(value, 64)
+    # Seed initial register and memory values if provided
+    if initial_regs or initial_memory:
+        from miasm.expression.expression import ExprId, ExprInt, ExprMem
+        ptr_bits = 64 if arch in ("x86_64", "aarch64l") else 32
+        for reg_name, value in (initial_regs or {}).items():
+            sb.symbols[ExprId(reg_name, 64)] = ExprInt(value & ((1 << 64) - 1), 64)
+        for base_addr, data_bytes in (initial_memory or {}).items():
+            for i, byte_val in enumerate(data_bytes):
+                sb.symbols[ExprMem(ExprInt(base_addr + i, ptr_bits), 8)] = ExprInt(byte_val & 0xFF, 8)
 
     # Execute the IR block
     loc_key = loc_db.get_offset_location(address)

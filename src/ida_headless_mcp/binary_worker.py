@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -24,6 +25,13 @@ __all__: list[str] = []
 QUEUE_FILENAME = "request_queue.jsonl"
 POLL_INTERVAL = 0.3
 HEARTBEAT_INTERVAL = 2.0  # seconds between heartbeat writes
+
+
+def _atomic_write(path: Path, data: str) -> None:
+    """Write data to path atomically via tmp+replace."""
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(data, encoding='utf-8')
+    os.replace(tmp, path)
 
 
 # Global mutable phase — the heartbeat thread reads this to know what to write
@@ -116,7 +124,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
 
     try:
         ida_mod.enable_console_messages(False)
-    except Exception:
+    except (AttributeError, TypeError, RuntimeError):
         pass  # Optional API, not all IDA builds expose it
 
     # Clean stale locks
@@ -150,17 +158,25 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     _update_state(sha_dir, state="ACTIVE", function_count=func_count,
                   worker_pid=__import__("os").getpid())
     print(f"[worker] ready: {func_count} functions", file=sys.stderr, flush=True)
-    # Build index if not cached
-    index_path = sha_dir / "index.json"
+    # Build index if not cached — protected against CFF crash
+    index_path = sha_dir / 'index.json'
     if not index_path.exists():
-        _current_phase = "building_index"
-        print(f"[worker] building index for {func_count} functions...", file=sys.stderr, flush=True)
-        from ida_headless_mcp.function_index import build_function_index
-        index = build_function_index()
-        print(f"[worker] index built, saving...", file=sys.stderr, flush=True)
-        index.save(index_path)
-        _update_state(sha_dir, state="INDEXED", function_count=func_count)
-        print(f"[worker] index saved", file=sys.stderr, flush=True)
+        _current_phase = 'building_index'
+        print(f'[worker] building index for {func_count} functions...', file=sys.stderr, flush=True)
+        try:
+            from ida_headless_mcp.function_index import build_function_index
+            index = build_function_index()
+            print(f'[worker] index built, saving...', file=sys.stderr, flush=True)
+            index.save(index_path)
+            _update_state(sha_dir, state='INDEXED', function_count=func_count)
+            print(f'[worker] index saved', file=sys.stderr, flush=True)
+        except (RuntimeError, OSError, MemoryError, SystemError) as exc:
+            # idalib can crash on CFF-heavy binaries during function iteration.
+            # Continue without index — tools that need it will get 'no index' error.
+            print(f'[worker] index build FAILED (continuing without index): {exc}',
+                  file=sys.stderr, flush=True)
+            _update_state(sha_dir, state='READY', function_count=func_count,
+                          error=f'Index build failed: {exc}')
 
     # Main loop: process requests from queue
     _current_phase = "idle"
@@ -180,6 +196,28 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     gen = Generation(sha_dir)
     last_activity = time.monotonic()
 
+    # Recover orphaned .processing files from prior crash
+    for queue_name in ('request_queue', 'write_queue'):
+        orphan = sha_dir / f'{queue_name}.processing'
+        original = sha_dir / f'{queue_name}.jsonl'
+        if orphan.exists():
+            try:
+                if not original.exists():
+                    # No live queue — just rename back (atomic)
+                    orphan.rename(original)
+                else:
+                    # Live queue exists — merge orphaned entries via tmp
+                    merged = orphan.read_text(encoding='utf-8')
+                    existing = original.read_text(encoding='utf-8')
+                    tmp = sha_dir / f'{queue_name}.merged.tmp'
+                    tmp.write_text(merged + existing, encoding='utf-8')
+                    os.replace(tmp, original)
+                    orphan.unlink(missing_ok=True)
+                print(f'[worker] recovered orphaned {queue_name}.processing',
+                      file=sys.stderr, flush=True)
+            except OSError:
+                pass  # best-effort recovery
+
     while True:
         if time.monotonic() - last_activity > idle_timeout:
             _current_phase = "exiting_idle"
@@ -187,11 +225,17 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
             break
 
         processed = False
-        processed |= _consume_queue(
+        had_mutations = _consume_queue(
             write_queue_path,
             lambda req: _handle_mutation(req, sha_dir, gen, write_results_dir, decompile_dir),
             sha_dir,
         )
+        if had_mutations:
+            # Wait for IDA autoanalysis to finish after mutations
+            # before processing read requests (decompile, xrefs, etc.)
+            import ida_auto
+            ida_auto.auto_wait()
+            processed = True
         processed |= _consume_queue(
             queue_path,
             lambda req: _dispatch_request(
@@ -213,11 +257,19 @@ def _consume_queue(queue_path: Path, handler, sha_dir: Path) -> bool:
     """
     if not queue_path.exists():
         return False
+    # Atomic consume: rename to .processing, then read.
+    # If server appends between rename and read, the append creates a NEW file
+    # at the original path — no data loss.
+    processing = queue_path.with_suffix('.processing')
     try:
-        raw = queue_path.read_text(encoding="utf-8").strip()
+        queue_path.rename(processing)
+    except (OSError, FileNotFoundError):
+        return False  # another consumer grabbed it, or file vanished
+    try:
+        raw = processing.read_text(encoding='utf-8').strip()
+        processing.unlink(missing_ok=True)
         if not raw:
             return False
-        queue_path.write_text("", encoding="utf-8")
     except OSError:
         return False
     for line in raw.splitlines():
@@ -230,16 +282,19 @@ def _consume_queue(queue_path: Path, handler, sha_dir: Path) -> bool:
             handler(req)
             _current_phase = "idle"
             _current_request = ""
-        except Exception as exc:
-            _current_phase = "idle"
-            _current_request = ""
-            req_type = "unknown"
+        except (RuntimeError, OSError, ValueError, TypeError, KeyError,
+                MemoryError, AttributeError, IndexError) as exc:
+            # Log and continue — one bad request must not kill the worker.
+            # SystemExit and KeyboardInterrupt propagate normally.
+            _current_phase = 'idle'
+            _current_request = ''
+            req_type = 'unknown'
             try:
-                req_type = json.loads(line).get("type", "unknown")
+                req_type = json.loads(line).get('type', 'unknown')
             except (ValueError, AttributeError):
-                pass  # Malformed line; fall back to "unknown" req_type for error report
+                pass  # malformed line
             _write_error(sha_dir, req_type, str(exc), __import__('traceback').format_exc())
-            print(f"[binary_worker] {req_type} FAILED: {exc}", file=sys.stderr, flush=True)
+            print(f'[binary_worker] {req_type} FAILED: {exc}', file=sys.stderr, flush=True)
     return True
 
 
@@ -274,29 +329,75 @@ def _handle_decompile(req, decompile_dir, current_gen):
     try:
         cfunc = ida_hexrays.decompile(func.start_ea)
         pseudocode = str(cfunc)
+        # If Hex-Rays returned None, retry with CFF microcode optimizer
+        if pseudocode == 'None':
+            print(f'[binary_worker] Hex-Rays returned None at 0x{ea:x}, trying CFF optimizer',
+                  file=sys.stderr, flush=True)
+            try:
+                from ida_headless_mcp.hexrays_cff import decompile_cff
+                cff_pseudo = decompile_cff(func.start_ea, max_lines=req.get('max_lines', 200))
+                if cff_pseudo and cff_pseudo != 'None':
+                    pseudocode = cff_pseudo
+                    print(f'[binary_worker] CFF optimizer succeeded at 0x{ea:x}',
+                          file=sys.stderr, flush=True)
+                else:
+                    # Last resort: delete+recreate function to force stack reanalysis
+                    # (ENTER 0xFFFF,0xFF creates 16MB stack frame that persists after NOP patching)
+                    print(f'[binary_worker] Trying function reanalysis at 0x{ea:x}',
+                          file=sys.stderr, flush=True)
+                    import ida_auto
+                    func_start = func.start_ea
+                    func_end = func.end_ea
+                    ida_funcs.del_func(func_start)
+                    ida_auto.auto_mark_range(func_start, func_end, ida_auto.AU_CODE)
+                    ida_auto.auto_wait()
+                    ida_funcs.add_func(func_start, func_end)
+                    ida_auto.auto_wait()
+                    func2 = ida_funcs.get_func(func_start)
+                    if func2:
+                        cfunc2 = ida_hexrays.decompile(func2.start_ea)
+                        if cfunc2 and str(cfunc2) != 'None':
+                            pseudocode = str(cfunc2)
+                            print(f'[binary_worker] Reanalysis succeeded at 0x{ea:x}',
+                                  file=sys.stderr, flush=True)
+                        else:
+                            print(f'[binary_worker] Reanalysis also failed at 0x{ea:x}',
+                                  file=sys.stderr, flush=True)
+            except (ImportError, RuntimeError, OSError) as cff_exc:
+                print(f'[binary_worker] CFF optimizer error at 0x{ea:x}: {cff_exc}',
+                      file=sys.stderr, flush=True)
         lines = pseudocode.splitlines()
-        max_lines = req.get("max_lines", 200)
+        max_lines = req.get('max_lines', 200)
         truncated = len(lines) > max_lines
         if truncated:
             lines = lines[:max_lines]
         result = {
-            "address": f"0x{func.start_ea:x}",
-            "name": ida_name.get_ea_name(func.start_ea),
-            "size_bytes": func.size(),
-            "pseudocode": "\n".join(lines),
-            "line_count": len(lines),
-            "truncated": truncated,
-            "status": "ready",
-            "generation": current_gen,
+            'address': f'0x{func.start_ea:x}',
+            'name': ida_name.get_ea_name(func.start_ea),
+            'size_bytes': func.size(),
+            'pseudocode': '\n'.join(lines),
+            'line_count': len(lines),
+            'truncated': truncated,
+            'status': 'ready',
+            'generation': current_gen,
         }
-        cache_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        _atomic_write(cache_file, json.dumps(result, indent=2))
         name = ida_name.get_ea_name(func.start_ea)
         if name:
-            name_file = decompile_dir / f"{name}.json"
+            name_file = decompile_dir / f'{name}.json'
             if not name_file.exists():
-                name_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    except Exception as exc:
-        print(f"[binary_worker] decompile failed at 0x{ea:x}: {exc}", file=sys.stderr, flush=True)
+                _atomic_write(name_file, json.dumps(result, indent=2))
+    except (RuntimeError, OSError, MemoryError, SystemError, ValueError, TypeError) as exc:
+        # Cache the failure so we don't retry forever
+        fail_result = {
+            'address': f'0x{ea:x}',
+            'pseudocode': None,
+            'error': str(exc),
+            'status': 'ready',
+            'generation': current_gen,
+        }
+        _atomic_write(cache_file, json.dumps(fail_result, indent=2))
+        print(f'[binary_worker] decompile failed at 0x{ea:x}: {exc}', file=sys.stderr, flush=True)
 
 
 def _handle_search_pattern(req, sha_dir, patterns_dir, current_gen):
@@ -310,8 +411,8 @@ def _handle_search_pattern(req, sha_dir, patterns_dir, current_gen):
     try:
         result = mgr.search_pattern(mgr._active_binary_id, pattern_type, limit=50)
         result["generation"] = current_gen
-        cache_file.write_text(json.dumps(result, separators=(',', ':')), encoding="utf-8")
-    except Exception as exc:
+        _atomic_write(cache_file, json.dumps(result, separators=(',', ':')))
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError, MemoryError) as exc:
         # Persist error so server can report it instead of silent failure
         _write_error(sha_dir, f"search_pattern_{pattern_type}", str(exc),
                      __import__('traceback').format_exc())
@@ -324,7 +425,7 @@ def _handle_search_pattern(req, sha_dir, patterns_dir, current_gen):
             "error": str(exc),
             "generation": current_gen,
         }
-        cache_file.write_text(json.dumps(error_result, separators=(',', ':')), encoding="utf-8")
+        _atomic_write(cache_file, json.dumps(error_result, separators=(',', ':')))
 
 
 def _handle_tool(req, sha_dir, results_dir, current_gen):
@@ -359,17 +460,20 @@ def _handle_tool(req, sha_dir, results_dir, current_gen):
         result = _dispatch(mgr, req_type, params)
         if isinstance(result, dict):
             result["generation"] = current_gen
-            cache_file.write_text(
-                json.dumps(result, separators=(',', ':')), encoding="utf-8",
-            )
-    except Exception as exc:
+            _atomic_write(cache_file, json.dumps(result, separators=(',', ':')))
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError,
+            AttributeError, IndexError, MemoryError) as exc:
         import sys
-        print(f"[binary_worker] _handle_tool error: {req_type}: {exc}", file=sys.stderr, flush=True)
-        err_file = results_dir / f"{req_type}_error.json"
-        err_file.write_text(json.dumps({
-            "error": str(exc), "type": req_type,
-            "params": {k: str(v) for k, v in params.items()}
-        }), encoding="utf-8")
+        print(f'[binary_worker] _handle_tool error: {req_type}: {exc}', file=sys.stderr, flush=True)
+        # Write error to the STANDARD cache file so the server finds it
+        # and stops re-queuing. Previously wrote to _error.json which the
+        # server's get_result never checked — causing infinite re-queue loops.
+        _atomic_write(cache_file, json.dumps({
+            'status': 'error',
+            'error': str(exc),
+            'type': req_type,
+            'binary_id': params.get('binary_id', ''),
+        }))
 
 
 def _handle_mutation(req, sha_dir, gen, write_results_dir, decompile_dir):
@@ -399,9 +503,12 @@ def _handle_mutation(req, sha_dir, gen, write_results_dir, decompile_dir):
 
         elif mutation_type == "patch_bytes":
             import ida_bytes
+            import ida_auto
             ea = int(params["address"], 16)
             data = bytes.fromhex(params["hex_bytes"])
             ida_bytes.patch_bytes(ea, data)
+            # Tell IDA to re-analyze the patched region
+            ida_auto.plan_range(ea, ea + len(data))
             index_data = _load_index_data(sha_dir)
             from ida_headless_mcp.mutations import invalidate_for_patch
             invalidated = invalidate_for_patch(sha_dir, params["address"], index_data)
@@ -409,13 +516,16 @@ def _handle_mutation(req, sha_dir, gen, write_results_dir, decompile_dir):
         new_gen = gen.bump()
         result["generation"] = new_gen
         result["invalidated"] = invalidated
-    except Exception as exc:
-        result["status"] = "error"
-        result["error"] = f"{type(exc).__name__}: {exc}"
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError,
+            AttributeError, IndexError, MemoryError) as exc:
+        # IDA API errors (ida_bytes, ida_name) surface as RuntimeError or OSError.
+        # KeyError/ValueError from malformed params. MemoryError from huge patches.
+        result['status'] = 'error'
+        result['error'] = f'{type(exc).__name__}: {exc}'
 
     if ticket_id:
         result_file = write_results_dir / f"{ticket_id}.json"
-        result_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        _atomic_write(result_file, json.dumps(result, indent=2))
 
 
 def _build_session_stub(sha_dir: Path):
@@ -579,7 +689,7 @@ def main() -> int:
 
     try:
         run_worker(args.sha256, Path(args.cache_dir), args.idle_timeout)
-    except Exception:
+    except (RuntimeError, OSError, MemoryError, SystemError, ValueError, KeyError) as exc:
         import traceback
         traceback.print_exc(file=sys.stderr)
         sys.stderr.flush()
