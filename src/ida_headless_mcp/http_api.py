@@ -12,13 +12,15 @@ so HTTP and stdio callers see one cache, one lifecycle, one set of binaries.
 from __future__ import annotations
 
 import os
+import tempfile
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, UploadFile
 
-from .server import _fe, mcp
+from .server import _fe, mcp, open_binary
 
 __all__ = ["create_app", "run_http"]
 
@@ -93,6 +95,29 @@ def create_app() -> FastAPI:
             }
             for tool in _tool_index().values()
         ]
+
+    @app.post("/upload", summary="Upload a binary for analysis")
+    async def upload_binary(file: UploadFile) -> dict[str, Any]:
+        """Upload a binary file. Saves to temp dir, calls open_binary."""
+        if not file.filename:
+            return {"status": "error", "error": "No filename in upload"}
+        suffix = Path(file.filename).suffix or ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=suffix, prefix="ida_upload_",
+            ) as tmp:
+                while chunk := await file.read(1024 * 1024):
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+            result = open_binary(tmp_path)
+            return result
+        except _TOOL_EXCEPTIONS as exc:
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            try:
+                os.unlink(tmp_path)  # type: ignore[possibly-undefined]
+            except (OSError, UnboundLocalError):
+                pass  # best-effort cleanup; workspace copy already made by open_binary
 
     for name, tool in _tool_index().items():
         if tool.is_async:
