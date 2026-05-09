@@ -22,7 +22,7 @@ from .cache_reader import CacheReader
 from .config import load_settings
 from .lifecycle import BinaryState, LifecycleManager
 
-__all__ = ["create_server", "main"]
+__all__ = ["create_server", "main", "main_http"]
 
 mcp = FastMCP(
     "IDA Headless MCP",
@@ -2619,6 +2619,12 @@ def main() -> None:
     """Entry point for stdio MCP server."""
     transport = os.environ.get("IDA_HEADLESS_MCP_TRANSPORT", "stdio")
     mcp.run(transport=transport)
+
+
+def main_http() -> None:
+    """Entry point for HTTP API server (mirrors every MCP tool as POST)."""
+    from .http_api import run_http
+    run_http()
 
 
 if __name__ == "__main__":
