@@ -76,10 +76,10 @@ class _Frontend:
     def _workspace_binary(self, sha: str) -> Path:
         """Return the path to the original binary in the workspace dir."""
         ws = self.settings.cache_dir / sha / "workspace"
-        for ext in ("*.exe", "*.EXE", "*.dll", "*.DLL", "*.sys", "*.SYS", "*"):
+        skip_suffixes = {".i64", ".idb", ".asm", ".id0", ".id1", ".id2", ".nam", ".til"}
+        for ext in ("*.exe", "*.EXE", "*.dll", "*.DLL", "*.sys", "*.SYS", "*.so", "*.dylib", "*"):
             hits = list(ws.glob(ext))
-            # Filter out IDA artifacts
-            hits = [h for h in hits if h.suffix.lower() not in (".i64", ".idb", ".asm", ".id0", ".id1", ".id2", ".nam", ".til")]
+            hits = [h for h in hits if h.suffix.lower() not in skip_suffixes]
             if hits:
                 return hits[0]
         raise FileNotFoundError(f"No binary found in {ws}")
