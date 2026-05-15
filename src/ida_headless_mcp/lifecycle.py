@@ -14,6 +14,7 @@ from __future__ import annotations
 import enum
 import json
 import os
+import platform
 import subprocess
 import sys
 import threading
@@ -392,9 +393,10 @@ class LifecycleManager:
             lc.state = BinaryState.READY
             self._save(lc)
             return
-        idat = self.ida_dir / "idat64.exe"
+        idat_name = "idat64.exe" if platform.system() == "Windows" else "idat"
+        idat = self.ida_dir / idat_name
         if not idat.exists():
-            lc.error = "idat64.exe not found"
+            lc.error = f"{idat_name} not found in {self.ida_dir}"
             self._save(lc)
             return
         try:

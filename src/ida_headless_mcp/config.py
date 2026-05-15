@@ -7,6 +7,7 @@ when they are unset.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,8 +79,14 @@ def load_settings() -> Settings:
     Returns:
         A populated :class:`Settings` value with all directories materialised.
     """
-    # Default assumes standard Windows install; override via IDA_HEADLESS_MCP_IDA_DIR env var
-    ida_dir = _env_path("IDA_HEADLESS_MCP_IDA_DIR", Path(r"C:/Program Files/IDA Professional 9.0"))
+    # Platform-appropriate default IDA directory
+    if sys.platform == "darwin":
+        default_ida = Path("/Applications/IDA Professional 9.3.app/Contents/MacOS")
+    elif sys.platform == "linux":
+        default_ida = Path("/opt/ida-pro-9.0")
+    else:
+        default_ida = Path(r"C:/Program Files/IDA Professional 9.0")
+    ida_dir = _env_path("IDA_HEADLESS_MCP_IDA_DIR", default_ida)
     project_dir = _env_path("IDA_HEADLESS_MCP_PROJECT_DIR", Path("projects"))
     cache_dir = _env_path("IDA_HEADLESS_MCP_CACHE_DIR", Path("cache"))
     settings = Settings(
