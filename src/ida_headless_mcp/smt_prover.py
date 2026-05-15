@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import platform
 import re
 import subprocess
 import tempfile
@@ -22,10 +23,11 @@ from typing import Any
 
 __all__ = ["solve_smtlib", "binbit_available"]
 
-# Resolve binbit binary path
+# Resolve binbit binary path — platform-appropriate extension
+_BINBIT_NAME = "binbit.exe" if platform.system() == "Windows" else "binbit"
 _BINBIT_PATH: str | None = os.environ.get(
     "IDA_HEADLESS_MCP_BINBIT_PATH",
-    str(Path(__file__).parent.parent.parent / "tools" / "binbit.exe"),
+    str(Path(__file__).parent.parent.parent / "tools" / _BINBIT_NAME),
 )
 
 

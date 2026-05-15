@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import sys
 import threading
 import time
@@ -96,11 +97,18 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     queue_path = sha_dir / QUEUE_FILENAME
 
     # Find the binary in workspace
-    exe_files = list(workspace.glob("*.exe")) + list(workspace.glob("*.EXE"))
-    if not exe_files:
+    if platform.system() == "Windows":
+        candidates = list(workspace.glob("*.exe")) + list(workspace.glob("*.EXE"))
+    else:
+        candidates = [f for f in workspace.iterdir() if f.is_file()]
+    # Exclude IDA artifact files
+    candidates = [f for f in candidates if f.suffix.lower() not in
+                  (".i64", ".idb", ".asm", ".id0", ".id1", ".id2", ".nam", ".til",
+                   ".json", ".jsonl", ".log", ".processing")]
+    if not candidates:
         _update_state(sha_dir, error="No binary found in workspace")
         sys.exit(1)
-    binary_path = exe_files[0]
+    binary_path = candidates[0]
 
     # Start background heartbeat thread — writes every 2s regardless of main thread
     global _current_phase, _current_request
