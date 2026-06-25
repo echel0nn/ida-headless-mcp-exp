@@ -2736,7 +2736,11 @@ def list_strings(
         binary_id: Opaque handle from open_binary.
         min_length: Minimum string length to surface (default 4).
             Raise to 8 or 12 to filter compiler / RTL junk.
-        encoding: ``"ascii"``, ``"utf16"``, or ``"all"`` (default).
+        encoding: ``"ascii"``, ``"utf16le"`` (canonical), or ``"all"``
+            (default). Aliases ``"utf16"``, ``"utf-16"``, ``"utf-16le"``
+            all map to ``"utf16le"``. Matches the labels under
+            ``by_encoding`` so a value pulled from one ``count_only``
+            response round-trips as the filter on the next call.
         section: Optional section name to limit the scan
             (``"CODE"``, ``".rdata"``, ``"DATA"``, ...). ``None`` walks
             every section with non-zero raw size.
@@ -2864,21 +2868,27 @@ def get_string_at(
         binary_id: Opaque handle from open_binary.
         address: Virtual address as a hex string (``"0x49b000"``).
         max_length: Hard cap on bytes scanned for the null terminator.
-        encoding: ``"ascii"`` (read_cstring) or ``"utf16"``
+        encoding: ``"ascii"`` (read_cstring) or ``"utf16le"``
             (read_wstring \u2014 UTF-16LE, two bytes per char).
+            Aliases: ``"utf16"``, ``"utf-16"``, ``"utf-16le"`` all map
+            to ``"utf16le"``. Matches the canonical labels emitted by
+            :func:`list_strings` so the encoding value round-trips
+            (count_only output -> next-call filter -> same hits).
 
     Returns:
         Dict with ``binary_id``, ``status``, ``address``, ``section``,
-        ``encoding``, ``value`` (the decoded string), and ``length``
-        (in characters, not bytes).
+        ``encoding`` (canonical form -- ``"ascii"`` or ``"utf16le"``),
+        ``value`` (the decoded string), and ``length`` (in characters,
+        not bytes).
     """
     fe = _fe()
     sha = fe._sha(binary_id)
     pe_path = fe._workspace_binary(sha)
     from .pe_reader import PEReader
     reader = PEReader(pe_path)
+    canonical = PEReader._normalize_encoding(encoding)
     va = int(address, 0)
-    if encoding == "utf16":
+    if canonical == "utf16le":
         raw = reader.read_wstring(va, max_length)
         value = raw.decode("utf-16-le", errors="replace")
     else:
@@ -2889,7 +2899,7 @@ def get_string_at(
         "status": "ready",
         "address": f"0x{va:08x}",
         "section": reader.section_for_va(va),
-        "encoding": encoding,
+        "encoding": canonical,
         "length": len(value),
         "value": value,
     }

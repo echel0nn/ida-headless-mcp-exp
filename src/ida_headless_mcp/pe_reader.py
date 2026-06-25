@@ -201,6 +201,29 @@ class PEReader:
 
     # -------- string extraction --------
 
+    # Encoding-name aliases. Callers pass any of these and they all
+    # mean the same thing. The contract used to be inconsistent: the
+    # filter check accepted ``"utf16"`` but every hit was emitted with
+    # ``"encoding": "utf16le"``, so an agent reading ``by_encoding``
+    # from a ``count_only`` call and passing the same label back as a
+    # filter got zero results. The hit label is the source of truth
+    # (``utf16le`` -- the wire format we actually decode); ``utf16``,
+    # ``utf-16``, and ``utf-16le`` are accepted as input aliases.
+    _ENCODING_ALIASES: dict[str, str] = {
+        "all": "all",
+        "ascii": "ascii",
+        "utf16": "utf16le",
+        "utf-16": "utf16le",
+        "utf16le": "utf16le",
+        "utf-16le": "utf16le",
+        "utf16-le": "utf16le",
+    }
+
+    @classmethod
+    def _normalize_encoding(cls, encoding: str) -> str:
+        key = (encoding or "all").strip().lower()
+        return cls._ENCODING_ALIASES.get(key, key)
+
     def iter_strings(
         self,
         min_length: int = 4,
@@ -211,7 +234,9 @@ class PEReader:
 
         Args:
             min_length: Minimum character length to surface.
-            encoding: ``"ascii"``, ``"utf16"``, or ``"all"`` (default).
+            encoding: ``"ascii"``, ``"utf16le"`` (canonical -- aliases
+                ``"utf16"``, ``"utf-16"``, ``"utf-16le"`` are all
+                accepted), or ``"all"`` (default).
             section: Limit to a named section (``"CODE"``, ``".rdata"``,
                 ``"DATA"``, etc.). ``None`` walks every section with
                 non-zero raw size.
@@ -220,6 +245,7 @@ class PEReader:
             ``{"address": "0x..", "section": "DATA", "encoding": "ascii",
                "length": N, "value": "..."}``
         """
+        canonical = self._normalize_encoding(encoding)
         sections_to_scan = self.sections
         if section is not None:
             sections_to_scan = [s for s in self.sections if s["name"] == section]
@@ -228,9 +254,9 @@ class PEReader:
                 continue
             chunk = self.data[s["raw_address"]:s["raw_address"] + s["raw_size"]]
             base_va = self.image_base + s["virtual_address"]
-            if encoding in ("ascii", "all"):
+            if canonical in ("ascii", "all"):
                 yield from self._scan_ascii(chunk, base_va, s["name"], min_length)
-            if encoding in ("utf16", "all"):
+            if canonical in ("utf16le", "all"):
                 yield from self._scan_utf16le(chunk, base_va, s["name"], min_length)
 
     @staticmethod

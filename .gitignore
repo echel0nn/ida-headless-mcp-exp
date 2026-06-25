@@ -49,3 +49,7 @@ tools/
 tools/binbit-src/
 test_binaries/*.exe
 docs/
+
+# Local commit-message scratchpad + run artifacts
+.commit_msg.txt
+.run/
