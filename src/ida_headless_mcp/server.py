@@ -70,8 +70,54 @@ class _Frontend:
     def _sha(self, binary_id: str) -> str:
         rec = self._binaries.get(binary_id)
         if rec is None:
+            # Defensive recover: an AILA worker may hold a binary_id
+            # from a prior server session that lazy-init didn't sweep
+            # in (e.g., the state.json was persisted by a stdio MCP
+            # instance and the HTTP server's recover_all hasn't
+            # noticed the new sha-dir yet). Try one targeted reload
+            # before raising. binary_id format is ``b_<first 12 hex of
+            # sha256>`` so a prefix match against the cache dir is
+            # O(N sha dirs) -- cheap even on a 100-binary cache.
+            recovered = self._try_recover_binary(binary_id)
+            if recovered is not None:
+                return recovered
             raise KeyError(f"Unknown binary_id: {binary_id}")
         return rec["sha256"]
+
+    def _try_recover_binary(self, binary_id: str) -> str | None:
+        """Best-effort: scan cache_dir for a sha that matches the
+        ``b_<12hex>`` prefix in ``binary_id`` and reload its lifecycle.
+
+        Mirrors what recover_all() does for a single binary so we
+        don't pay the full-cache walk cost on every miss. Returns
+        the sha256 when recovery succeeds, ``None`` otherwise.
+        """
+        if not binary_id.startswith("b_") or len(binary_id) < 14:
+            return None
+        prefix = binary_id[2:14].lower()
+        try:
+            for sha_dir in self.settings.cache_dir.iterdir():
+                if not sha_dir.is_dir() or len(sha_dir.name) != 64:
+                    continue
+                if not sha_dir.name.lower().startswith(prefix):
+                    continue
+                lc = self.lifecycle._load(sha_dir.name)  # noqa: SLF001
+                if lc is None:
+                    continue
+                self.lifecycle._lifecycles[lc.binary_id] = lc  # noqa: SLF001
+                self._binaries[lc.binary_id] = {
+                    "binary_id": lc.binary_id,
+                    "sha256": lc.sha256,
+                    "path": lc.original_path,
+                    "root_filename": lc.root_filename,
+                    "size_bytes": lc.size_bytes,
+                    "state": lc.state.name,
+                    "function_count": lc.function_count,
+                }
+                return lc.sha256
+        except OSError:
+            return None
+        return None
 
     def _workspace_binary(self, sha: str) -> Path:
         """Return the path to the original binary in the workspace dir."""
@@ -2815,14 +2861,38 @@ def create_server() -> FastMCP:
     return mcp
 
 
+def _warmup_frontend() -> None:
+    """Eagerly initialize the _Frontend singleton at server boot.
+
+    Without this, the lazy ``_fe()`` accessor builds _Frontend on the
+    FIRST HTTP request post-restart -- and recover_all() walks every
+    sha-dir in the cache sequentially while that request is in flight.
+    Callers holding stale binary_ids (AILA workers persist them in DB)
+    race the recovery sweep and see ``Unknown binary_id`` for the
+    handful of seconds it takes to scan a large cache. Warm-up before
+    any HTTP request makes that window zero. Best-effort; if recovery
+    raises, the lazy path still runs on the next ``_fe()`` call.
+    """
+    try:
+        _fe()
+    except (OSError, RuntimeError) as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "frontend warm-up failed (%s); lazy init will retry on "
+            "first request", exc,
+        )
+
+
 def main() -> None:
     """Entry point for stdio MCP server."""
+    _warmup_frontend()
     transport = os.environ.get("IDA_HEADLESS_MCP_TRANSPORT", "stdio")
     mcp.run(transport=transport)
 
 
 def main_http() -> None:
     """Entry point for HTTP API server (mirrors every MCP tool as POST)."""
+    _warmup_frontend()
     from .http_api import run_http
     run_http()
 
