@@ -120,15 +120,54 @@ class _Frontend:
         return None
 
     def _workspace_binary(self, sha: str) -> Path:
-        """Return the path to the original binary in the workspace dir."""
+        """Return the path to the original binary file for ``sha``.
+
+        Lookup order:
+          1. The workspace dir under this server's cache_dir. Common
+             case -- ``open_binary`` copies the upload into
+             ``<cache_dir>/<sha>/workspace/<filename>`` when
+             registering. Skips IDA artifact extensions (``.i64`` /
+             ``.idb`` / ``.asm`` / ``.id?`` / ``.nam`` / ``.til``)
+             which are IDA outputs, not source.
+          2. ``lifecycle.original_path`` -- the path the binary was
+             registered FROM. When the server was started against a
+             cache that holds IDA artifacts but not the source bytes
+             (e.g. another harness's cache dir was passed via
+             ``IDA_HEADLESS_MCP_CACHE_DIR`` and the source bytes
+             live in yet another directory), the original_path field
+             on state.json still points at the source. PE-reader-
+             family tools (``list_strings`` / ``read_memory`` /
+             ``get_string_at``) need bytes, not IDA artifacts --
+             this fallback lets them read from the original
+             location even when the workspace dir is artifact-only.
+        """
         ws = self.settings.cache_dir / sha / "workspace"
         skip_suffixes = {".i64", ".idb", ".asm", ".id0", ".id1", ".id2", ".nam", ".til"}
-        for ext in ("*.exe", "*.EXE", "*.dll", "*.DLL", "*.sys", "*.SYS", "*.so", "*.dylib", "*"):
-            hits = list(ws.glob(ext))
-            hits = [h for h in hits if h.suffix.lower() not in skip_suffixes]
-            if hits:
-                return hits[0]
-        raise FileNotFoundError(f"No binary found in {ws}")
+        if ws.exists():
+            for ext in ("*.exe", "*.EXE", "*.dll", "*.DLL", "*.sys", "*.SYS", "*.so", "*.dylib", "*"):
+                hits = list(ws.glob(ext))
+                hits = [h for h in hits if h.suffix.lower() not in skip_suffixes]
+                if hits:
+                    return hits[0]
+        # Fallback: original_path from the lifecycle record. The
+        # caller already validated the binary is registered (otherwise
+        # ``_sha`` would have raised); only the on-disk bytes are
+        # missing from this server's workspace.
+        lc = self.lifecycle.get_by_sha(sha) if hasattr(self.lifecycle, "get_by_sha") else None
+        if lc is None:
+            for tracked in self.lifecycle.all():
+                if tracked.sha256 == sha:
+                    lc = tracked
+                    break
+        if lc is not None and lc.original_path:
+            original = Path(lc.original_path)
+            if original.is_file():
+                return original
+        raise FileNotFoundError(
+            f"No binary found in {ws}"
+            + (f" and lifecycle original_path={lc.original_path!r} is missing"
+               if lc and lc.original_path else ""),
+        )
 
     def _pending(self, binary_id: str, lc: Any, worker_action: str = "") -> dict[str, Any]:
         """Build an informative pending response with worker diagnostics."""
