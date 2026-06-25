@@ -1,4 +1,4 @@
-"""Miasm-based analysis tools — run server-side, no idalib needed.
+"""Miasm-based analysis tools \u2014 run server-side, no idalib needed.
 
 These tools operate on raw binary bytes read from the workspace PE file.
 They do NOT require a worker process or idalib. Results are instant.
@@ -11,9 +11,41 @@ Capabilities:
 """
 from __future__ import annotations
 
+import functools
+import logging
 import struct
+import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
+
+# Compatibility shim: miasm.core.cpu (versions <= 0.1.4) imports
+# ``pyparsing.operatorPrecedence`` at module load. pyparsing 3.0
+# removed that camelCase alias in favor of ``infixNotation``. On a
+# fresh Python 3.13 install with pyparsing >= 3.0.0 the miasm import
+# raises ``AttributeError: module 'pyparsing' has no attribute
+# 'operatorPrecedence'`` -- bare ``Internal Server Error`` from
+# FastAPI, no JSON envelope, agent sees an opaque failure.
+#
+# The shim aliases the new name back to the old before miasm imports
+# fire. Idempotent + safe across pyparsing versions: if
+# ``operatorPrecedence`` already exists, the assignment is a no-op;
+# if ``infixNotation`` is missing too (very old pyparsing), the
+# shim does nothing and miasm imports normally.
+try:
+    import pyparsing as _pp
+    if not hasattr(_pp, "operatorPrecedence") and hasattr(_pp, "infixNotation"):
+        _pp.operatorPrecedence = _pp.infixNotation
+        _log.info(
+            "miasm_tools: shimmed pyparsing.operatorPrecedence -> "
+            "infixNotation for miasm compatibility",
+        )
+except ImportError:
+    # pyparsing missing -- miasm imports will fail on their own with
+    # a clean ImportError, caught by the per-tool try/except below.
+    pass
 
 __all__ = [
     "miasm_disassemble",
@@ -21,6 +53,42 @@ __all__ = [
     "miasm_simplify_expression",
     "miasm_emulate_snippet",
 ]
+
+
+def _safe_miasm_call(fn: Callable[..., dict]) -> Callable[..., dict]:
+    """Decorator wrapping a miasm tool function in a clean error path.
+
+    Catches every exception (miasm import failures, IR build errors,
+    out-of-range addresses, symbolic-execution divergence) and
+    returns ``{status: 'error', error: '<excerpt>', traceback: '...'}``
+    so the HTTP transport ships a JSON envelope instead of bubbling
+    to a bare 500. The agent then sees a structured error it can
+    pivot on rather than an opaque 'Internal Server Error' string.
+
+    The traceback is included for the operator's worker log but
+    bounded to 2000 chars so a deep miasm stack doesn't dominate
+    the response payload.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return fn(*args, **kwargs)
+        except (
+            ImportError, AttributeError, ValueError, TypeError,
+            OSError, NotImplementedError, RuntimeError,
+        ) as exc:
+            tb = traceback.format_exc()
+            _log.warning(
+                "miasm_tools.%s failed: %s\n%s",
+                fn.__name__, exc, tb[:4000],
+            )
+            return {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": tb[:2000],
+                "tool": fn.__name__,
+            }
+    return wrapper
 
 
 def _read_bytes_at_va(pe_path: Path, va: int, size: int) -> bytes | None:
@@ -93,6 +161,7 @@ def _detect_arch(pe_path: Path) -> str:
     return ''
 
 
+@_safe_miasm_call
 def miasm_disassemble(
     pe_path: Path, address: int, size: int = 64, arch: str = "",
 ) -> dict[str, Any]:
@@ -146,6 +215,7 @@ def miasm_disassemble(
     }
 
 
+@_safe_miasm_call
 def miasm_lift_ir(
     pe_path: Path, address: int, size: int = 64, arch: str = "",
 ) -> dict[str, Any]:
@@ -210,6 +280,7 @@ def miasm_lift_ir(
     }
 
 
+@_safe_miasm_call
 def miasm_simplify_expression(expression_str: str) -> dict[str, Any]:
     """Simplify a symbolic expression using miasm's rewrite rules.
 
@@ -223,9 +294,10 @@ def miasm_simplify_expression(expression_str: str) -> dict[str, Any]:
     Returns:
         Dict with original and simplified expression strings.
     """
-    from miasm.expression.expression import ExprId, ExprInt, ExprOp, ExprCompose, ExprSlice
-    from miasm.expression.simplifications import expr_simp
     import re
+
+    from miasm.expression.expression import ExprCompose, ExprId, ExprInt, ExprOp, ExprSlice
+    from miasm.expression.simplifications import expr_simp
 
     # Build a namespace of common registers for parsing
     regs_64 = {
@@ -268,6 +340,7 @@ def miasm_simplify_expression(expression_str: str) -> dict[str, Any]:
     }
 
 
+@_safe_miasm_call
 def miasm_emulate_snippet(
     pe_path: Path,
     address: int,
