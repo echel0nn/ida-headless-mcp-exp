@@ -2629,30 +2629,51 @@ def list_strings(
     encoding: str = "all",
     section: str | None = None,
     offset: int = 0,
-    limit: int = 2000,
+    limit: int = 200,
     filter_text: str = "",
+    count_only: bool = False,
 ) -> dict[str, Any]:
     """Enumerate every printable string in the binary file.
 
-    Synchronous \u2014 reads the PE off disk and walks each section's
+    Synchronous -- reads the PE off disk and walks each section's
     bytes. Returns ASCII and UTF-16LE runs >= ``min_length`` chars.
+
+    Context-budget note: on a large binary (DLL > 10 MiB, packed
+    Electron / Qt builds, .NET assemblies) an unfiltered call can
+    yield 50K+ strings. Default ``limit`` is 200 so an unscoped call
+    stays bounded; the response's ``total`` field tells you whether
+    there are more. Reach for ``count_only=True`` first on an unknown
+    binary to learn the size + per-section + per-encoding breakdown
+    cheaply, then issue a scoped follow-up with ``filter_text`` and
+    / or ``section`` set.
 
     Args:
         binary_id: Opaque handle from open_binary.
         min_length: Minimum string length to surface (default 4).
+            Raise to 8 or 12 to filter compiler / RTL junk.
         encoding: ``"ascii"``, ``"utf16"``, or ``"all"`` (default).
         section: Optional section name to limit the scan
             (``"CODE"``, ``".rdata"``, ``"DATA"``, ...). ``None`` walks
             every section with non-zero raw size.
         offset: Pagination offset into the full result list.
-        limit: Maximum strings to return (default 2000).
+        limit: Maximum strings to return (default 200, max 5000).
+            Ignored when ``count_only=True``.
         filter_text: Case-insensitive substring filter on the string
-            value. Empty disables filtering.
+            value. Empty disables filtering. Tight filters
+            (``"http"``, ``"HKLM"``, ``".onion"``) keep the response
+            small regardless of binary size.
+        count_only: When True, returns ONLY total counts (no
+            ``strings`` payload). Cheap pre-flight; use this first
+            on unknown / large binaries to plan the real query.
 
     Returns:
         Dict with ``binary_id``, ``status``, ``total``, ``offset``,
-        ``limit``, and ``strings`` (list of dicts with ``address``,
-        ``section``, ``encoding``, ``length``, ``value``).
+        ``limit``, ``filter_text``, ``min_length``, ``by_section``
+        (dict of section_name -> hit count, always populated),
+        ``by_encoding`` (dict of encoding -> hit count), and
+        ``strings`` (list of dicts with ``address``, ``section``,
+        ``encoding``, ``length``, ``value``; omitted when
+        ``count_only=True``).
     """
     fe = _fe()
     sha = fe._sha(binary_id)
@@ -2660,23 +2681,40 @@ def list_strings(
     from .pe_reader import PEReader
     reader = PEReader(pe_path)
     ft = filter_text.lower()
-    all_hits: list[dict[str, Any]] = []
+    # Cap the per-call limit so a misbehaving agent (limit=999_999)
+    # can't drain the worker process's memory by materializing every
+    # string on a packed multi-megabyte binary.
+    capped_limit = max(1, min(limit, 5000))
+    by_section: dict[str, int] = {}
+    by_encoding: dict[str, int] = {}
+    total = 0
+    page: list[dict[str, Any]] = []
     for hit in reader.iter_strings(
         min_length=min_length, encoding=encoding, section=section,
     ):
         if ft and ft not in hit["value"].lower():
             continue
-        all_hits.append(hit)
-    total = len(all_hits)
-    page = all_hits[offset:offset + limit]
-    return {
+        total += 1
+        by_section[hit["section"]] = by_section.get(hit["section"], 0) + 1
+        by_encoding[hit["encoding"]] = by_encoding.get(hit["encoding"], 0) + 1
+        if count_only:
+            continue
+        if offset <= total - 1 < offset + capped_limit:
+            page.append(hit)
+    result: dict[str, Any] = {
         "binary_id": binary_id,
         "status": "ready",
         "total": total,
         "offset": offset,
-        "limit": limit,
-        "strings": page,
+        "limit": capped_limit,
+        "filter_text": filter_text,
+        "min_length": min_length,
+        "by_section": by_section,
+        "by_encoding": by_encoding,
     }
+    if not count_only:
+        result["strings"] = page
+    return result
 
 
 @mcp.tool()
