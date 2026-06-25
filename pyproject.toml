@@ -11,6 +11,8 @@ requires-python = ">=3.11"
 dependencies = [
   "mcp>=1.0.0",
   "pydantic>=2.0.0",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +23,7 @@ dev = [
 
 [project.scripts]
 ida-headless-mcp = "ida_headless_mcp.server:main"
+ida-headless-http = "ida_headless_mcp.server:main_http"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
