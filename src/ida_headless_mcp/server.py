@@ -2610,6 +2610,168 @@ def verify_capabilities(
     return _server_tool('verify_capabilities', binary_id, '', _compute)
 
 
+# ======================================================================
+# TOOLS \u2014 PE reader (synchronous, no worker required)
+#
+# These three tools read the binary file directly off disk via
+# pe_reader.PEReader. No IDA round-trip, no cache poll, no pending
+# status. They give the agent the "enumerate strings" and "read memory"
+# surface that was missing from the existing catalog -- without those
+# the agent cannot find URL constants like the XRed C2 URLs unless
+# classify_strings happens to pick them up (which it routinely does not).
+# ======================================================================
+
+
+@mcp.tool()
+def list_strings(
+    binary_id: str,
+    min_length: int = 4,
+    encoding: str = "all",
+    section: str | None = None,
+    offset: int = 0,
+    limit: int = 2000,
+    filter_text: str = "",
+) -> dict[str, Any]:
+    """Enumerate every printable string in the binary file.
+
+    Synchronous \u2014 reads the PE off disk and walks each section's
+    bytes. Returns ASCII and UTF-16LE runs >= ``min_length`` chars.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        min_length: Minimum string length to surface (default 4).
+        encoding: ``"ascii"``, ``"utf16"``, or ``"all"`` (default).
+        section: Optional section name to limit the scan
+            (``"CODE"``, ``".rdata"``, ``"DATA"``, ...). ``None`` walks
+            every section with non-zero raw size.
+        offset: Pagination offset into the full result list.
+        limit: Maximum strings to return (default 2000).
+        filter_text: Case-insensitive substring filter on the string
+            value. Empty disables filtering.
+
+    Returns:
+        Dict with ``binary_id``, ``status``, ``total``, ``offset``,
+        ``limit``, and ``strings`` (list of dicts with ``address``,
+        ``section``, ``encoding``, ``length``, ``value``).
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    from .pe_reader import PEReader
+    reader = PEReader(pe_path)
+    ft = filter_text.lower()
+    all_hits: list[dict[str, Any]] = []
+    for hit in reader.iter_strings(
+        min_length=min_length, encoding=encoding, section=section,
+    ):
+        if ft and ft not in hit["value"].lower():
+            continue
+        all_hits.append(hit)
+    total = len(all_hits)
+    page = all_hits[offset:offset + limit]
+    return {
+        "binary_id": binary_id,
+        "status": "ready",
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "strings": page,
+    }
+
+
+@mcp.tool()
+def read_memory(
+    binary_id: str,
+    address: str,
+    size: int = 64,
+) -> dict[str, Any]:
+    """Read raw bytes from the loaded image at a virtual address.
+
+    Synchronous \u2014 translates VA to file offset via the PE section
+    table and reads bytes off disk. Returns ``b''`` (empty bytes) for
+    VAs that aren't backed by on-disk bytes (BSS / uninitialized).
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address: Virtual address as a hex string (``"0x401000"``) or
+            decimal int-string.
+        size: Number of bytes to read (default 64). Clipped at the
+            owning section's raw end so the read never bleeds across
+            section boundaries.
+
+    Returns:
+        Dict with ``binary_id``, ``status``, ``address``, ``section``,
+        ``size``, ``hex`` (raw bytes hex-encoded), and ``ascii`` (a
+        printable rendering: printable chars as-is, others as ``.``).
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    from .pe_reader import PEReader
+    reader = PEReader(pe_path)
+    va = int(address, 0)
+    raw = reader.read_va(va, max(1, size))
+    ascii_render = "".join(chr(b) if 0x20 <= b < 0x7F else "." for b in raw)
+    return {
+        "binary_id": binary_id,
+        "status": "ready",
+        "address": f"0x{va:08x}",
+        "section": reader.section_for_va(va),
+        "size": len(raw),
+        "hex": raw.hex(),
+        "ascii": ascii_render,
+    }
+
+
+@mcp.tool()
+def get_string_at(
+    binary_id: str,
+    address: str,
+    max_length: int = 512,
+    encoding: str = "ascii",
+) -> dict[str, Any]:
+    """Read a null-terminated string at a virtual address.
+
+    Convenience wrapper over ``read_memory`` for the common case of
+    "resolve this string-pointer constant in code to the actual
+    string value". Caps at ``max_length`` to bound corrupt-pointer
+    blast radius.
+
+    Args:
+        binary_id: Opaque handle from open_binary.
+        address: Virtual address as a hex string (``"0x49b000"``).
+        max_length: Hard cap on bytes scanned for the null terminator.
+        encoding: ``"ascii"`` (read_cstring) or ``"utf16"``
+            (read_wstring \u2014 UTF-16LE, two bytes per char).
+
+    Returns:
+        Dict with ``binary_id``, ``status``, ``address``, ``section``,
+        ``encoding``, ``value`` (the decoded string), and ``length``
+        (in characters, not bytes).
+    """
+    fe = _fe()
+    sha = fe._sha(binary_id)
+    pe_path = fe._workspace_binary(sha)
+    from .pe_reader import PEReader
+    reader = PEReader(pe_path)
+    va = int(address, 0)
+    if encoding == "utf16":
+        raw = reader.read_wstring(va, max_length)
+        value = raw.decode("utf-16-le", errors="replace")
+    else:
+        raw = reader.read_cstring(va, max_length)
+        value = raw.decode("latin-1", errors="replace")
+    return {
+        "binary_id": binary_id,
+        "status": "ready",
+        "address": f"0x{va:08x}",
+        "section": reader.section_for_va(va),
+        "encoding": encoding,
+        "length": len(value),
+        "value": value,
+    }
+
+
 def create_server() -> FastMCP:
     """Create and return the FastMCP server instance."""
     return mcp

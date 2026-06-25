@@ -95,12 +95,21 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     workspace = sha_dir / "workspace"
     queue_path = sha_dir / QUEUE_FILENAME
 
-    # Find the binary in workspace
-    exe_files = list(workspace.glob("*.exe")) + list(workspace.glob("*.EXE"))
-    if not exe_files:
+    # Find the binary in workspace. Match anything that isn't an IDA
+    # database artifact (.i64 / .idb / .id0 / .id1 / .id2 / .nam /
+    # .til / .asm / .lst) so we work for .exe, .dll, .so, .dylib,
+    # ELF binaries with no extension, macOS Mach-O, kernel images.
+    # Hex-Rays/IDA's open_database() handles all of these uniformly.
+    _IDA_SUFFIXES = (".i64", ".idb", ".id0", ".id1", ".id2", ".nam",
+                     ".til", ".asm", ".lst")
+    candidates = [
+        f for f in workspace.iterdir()
+        if f.is_file() and not f.name.lower().endswith(_IDA_SUFFIXES)
+    ]
+    if not candidates:
         _update_state(sha_dir, error="No binary found in workspace")
         sys.exit(1)
-    binary_path = exe_files[0]
+    binary_path = candidates[0]
 
     # Start background heartbeat thread — writes every 2s regardless of main thread
     global _current_phase, _current_request
