@@ -1,4 +1,4 @@
-"""IDA worker subprocess — owns one idalib instance, processes commands via stdin/stdout JSON-RPC."""
+"""IDA worker subprocess -- owns one idalib instance, processes commands via stdin/stdout JSON-RPC."""
 from __future__ import annotations
 
 import json
@@ -27,7 +27,7 @@ def run_worker() -> None:
     try:
         mgr._ida.enable_console_messages(False)
     except (AttributeError, RuntimeError) as exc:
-        # Console redirect failed — IDA noise may now leak into stdout and
+        # Console redirect failed -- IDA noise may now leak into stdout and
         # corrupt JSON-RPC frames. Surface to stderr so the parent (lifecycle.py)
         # captures it in the worker stderr log instead of going silent.
         print(f"[worker] enable_console_messages failed: {exc}", file=sys.stderr, flush=True)
@@ -73,7 +73,7 @@ def _dispatch(mgr: Any, method: str, params: dict[str, Any]) -> Any:
     Raises:
         ValueError: If ``method`` is not in the dispatch table.
     """
-    # Direct method mapping — every public method on the manager
+    # Direct method mapping -- every public method on the manager
     dispatch_table = {
         "open_binary": lambda p: _serialize_record(mgr.open_binary(p["path"])),
         "close_binary": lambda p: mgr.close_binary(p["binary_id"], save=p.get("save", False)),

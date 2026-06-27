@@ -5,7 +5,7 @@ specific obfuscation flavour and, when possible, recovers the
 ``state_value -> handler_address`` mapping that the dispatcher implements.
 
 Patterns operate purely on the abstract :class:`BlockInfo` shape exported by
-``_types`` — they never call into miasm or any disassembler. This keeps the
+``_types`` -- they never call into miasm or any disassembler. This keeps the
 detection layer fast (millisecond-scale) and lets the same code drive both
 static scans and live-decompiler queries.
 
@@ -17,8 +17,8 @@ Patterns implemented
   state value is independent (not cumulative). Found in some Themida CFF
   modes and custom OLLVM forks.
 - :class:`SwitchJumpTableDispatcher`: Compiler-style indexed jump table
-  ``JMP [reg*scale + base]``. Lower confidence — could be a legitimate
-  switch — and static state extraction needs the binary jump table.
+  ``JMP [reg*scale + base]``. Lower confidence -- could be a legitimate
+  switch -- and static state extraction needs the binary jump table.
 - :class:`IndirectComputedDispatcher`: ``JMP reg`` where the register is
   computed from the state variable. Found in VMProtect's CFF mode and
   bespoke obfuscators. State extraction requires symbolic execution.
@@ -48,7 +48,7 @@ __all__ = [
 _LARGE_IMM_THRESHOLD = 0xFFFF
 
 # Conditional-jump mnemonics that fire when the previous SUB/CMP yielded
-# zero — these are the only branches that complete a state-match dispatch.
+# zero -- these are the only branches that complete a state-match dispatch.
 _ZERO_BRANCH_MNEMONICS = frozenset({"JZ", "JE"})
 
 
@@ -271,7 +271,7 @@ class CmpJeTableDispatcher(DispatcherPattern):
                 cmp_pairs += 1
             elif mnem == "SUB":
                 sub_pairs += 1
-        # If SUBs dominate we defer to SubJzChainDispatcher — that pattern
+        # If SUBs dominate we defer to SubJzChainDispatcher -- that pattern
         # already understands how to walk a mixed chain.
         if sub_pairs >= cmp_pairs and sub_pairs >= 3:
             return 0.0
@@ -317,7 +317,7 @@ class SwitchJumpTableDispatcher(DispatcherPattern):
 
     name = "switch_jump_table"
     description = (
-        "Indexed memory jump (JMP [reg*scale + base_table]) — covers both "
+        "Indexed memory jump (JMP [reg*scale + base_table]) -- covers both "
         "compiler-emitted switches and table-driven CFF dispatchers"
     )
 
@@ -383,7 +383,7 @@ class IndirectComputedDispatcher(DispatcherPattern):
 
     The register is loaded from a runtime computation involving the state
     variable (e.g. ``mov rax, [state*8 + table]; xor rax, key; jmp rax``).
-    Static state recovery is impossible — the analysis layer must defer
+    Static state recovery is impossible -- the analysis layer must defer
     to symbolic execution.
     """
 
@@ -423,7 +423,7 @@ class IndirectComputedDispatcher(DispatcherPattern):
         block: BlockInfo,
         cfg_blocks: dict[int, BlockInfo],
     ) -> dict[int, int]:
-        """Cannot resolve targets statically — return an empty mapping.
+        """Cannot resolve targets statically -- return an empty mapping.
 
         The :mod:`cff_analysis` layer interprets an empty result for this
         pattern as a request to fall back to symbolic execution.

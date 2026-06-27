@@ -1,4 +1,4 @@
-"""Recovery tools — expensive transformations that produce clean analysis output.
+"""Recovery tools -- expensive transformations that produce clean analysis output.
 
 These tools restructure obfuscated code into analyzable forms:
 - CFG recovery from control-flow-flattened functions

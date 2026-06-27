@@ -1,4 +1,4 @@
-"""CFF deflattening patcher — generates byte patches to linearize control flow.
+"""CFF deflattening patcher -- generates byte patches to linearize control flow.
 
 Takes the deflattened state machine and the raw disassembly, computes byte
 patches that replace dispatcher-loop jumps with direct handler-to-handler

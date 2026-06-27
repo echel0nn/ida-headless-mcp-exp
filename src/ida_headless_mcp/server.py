@@ -1,4 +1,4 @@
-"""MCP server — pure cache reader, NEVER imports idalib.
+"""MCP server -- pure cache reader, NEVER imports idalib.
 
 Every tool call either:
   1. Returns a cached result instantly
@@ -320,7 +320,7 @@ def _fe() -> _Frontend:
 
 
 # ======================================================================
-# TOOLS — lifecycle management (no IDA needed)
+# TOOLS -- lifecycle management (no IDA needed)
 # ======================================================================
 
 
@@ -525,7 +525,7 @@ def worker_status() -> dict:
                 process_alive = True
             except OSError:
                 # os.kill(pid, 0) raises OSError when the process is gone; that's
-                # exactly the signal we want — process_alive stays False.
+                # exactly the signal we want -- process_alive stays False.
                 pass
 
         # Compute definitive worker_status
@@ -583,7 +583,7 @@ def worker_status() -> dict:
 
 
 # ======================================================================
-# TOOLS — decompile (cache or pending)
+# TOOLS -- decompile (cache or pending)
 # ======================================================================
 
 
@@ -592,7 +592,7 @@ def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dic
     """Decompile a function by address or name.
 
     Returns cached pseudocode instantly, queues background decompilation,
-    or — when Hex-Rays returns None (e.g. CFF-obfuscated code) — falls
+    or -- when Hex-Rays returns None (e.g. CFF-obfuscated code) -- falls
     back to the CFF analysis pipeline automatically.
 
     Args:
@@ -633,7 +633,7 @@ def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dic
                             cache_dir=fe.settings.cache_dir, sha=sha)
                         cached['line_count'] = len(cached['pseudocode'].splitlines())
                     else:
-                        # Spawn async deflat only — deflat calls detect internally.
+                        # Spawn async deflat only -- deflat calls detect internally.
                         # Results cached separately for next poll.
                         def _deflat_fn(p=pe_path, a=ea):
                             from .cff_analysis import deflat_function
@@ -651,7 +651,7 @@ def decompile(binary_id: str, address_or_name: str, max_lines: int = 500) -> dic
 
 
 # ======================================================================
-# TOOLS — index-based (read from cached index or pending)
+# TOOLS -- index-based (read from cached index or pending)
 # ======================================================================
 
 
@@ -674,7 +674,7 @@ def list_functions(
         offset: Pagination offset.
         limit: Maximum entries to return.
         filter_text: Case-insensitive substring filter on function name.
-        order_by: Sort key — name, complexity_desc, or size_desc.
+        order_by: Sort key -- name, complexity_desc, or size_desc.
         min_size_bytes: Minimum function size in bytes.
         min_complexity: Minimum cyclomatic complexity.
         exclude_thunks: Drop functions flagged as thunks.
@@ -848,7 +848,7 @@ def call_chain(binary_id: str, target_function: str, depth: int = 5, direction: 
 def find_similar_functions(binary_id: str, address_or_name: str) -> dict:
     """Find functions in the same binary sharing the target's structure_hash.
 
-    Server-side only — reads the cached function index, no worker needed.
+    Server-side only -- reads the cached function index, no worker needed.
     Two functions with the same ``structure_hash`` have the same control-flow
     shape and call signature, which usually indicates duplicated logic,
     template instantiations, or shared library code.
@@ -924,7 +924,7 @@ def find_similar_functions(binary_id: str, address_or_name: str) -> dict:
 def cross_binary_similarity(binary_id_a: str, binary_id_b: str) -> dict:
     """Match functions across two binaries by ``structure_hash``.
 
-    Server-side only — reads both cached function indexes, no worker needed.
+    Server-side only -- reads both cached function indexes, no worker needed.
     Trivial matches are suppressed: thunks and functions smaller than 16
     bytes are dropped before pairing, and entries without a
     ``structure_hash`` are ignored.
@@ -1001,7 +1001,7 @@ def cross_binary_similarity(binary_id_a: str, binary_id_b: str) -> dict:
 
 
 # ======================================================================
-# TOOLS — IDA-dependent (cache or pending, worker does the heavy lifting)
+# TOOLS -- IDA-dependent (cache or pending, worker does the heavy lifting)
 # ======================================================================
 
 
@@ -1018,13 +1018,13 @@ def _ida_tool(tool_name: str, binary_id: str, key: str = "", **params: Any) -> d
     if cached:
         cached["binary_id"] = binary_id
         cached["status"] = "ready"
-        # Check staleness — warn consumer if data may be outdated
+        # Check staleness -- warn consumer if data may be outdated
         safe_key = key.replace('/', '_').replace('\\', '_').replace(':', '_')
         filename = f"{tool_name}_{safe_key}.json" if safe_key else f"{tool_name}.json"
         cache_file = fe.settings.cache_dir / sha / "results" / filename
         staleness = fe.cache.check_staleness(sha, cache_file)
         if staleness["stale"]:
-            cached["_warning"] = "Result may be stale — a write operation occurred after this was cached."
+            cached["_warning"] = "Result may be stale -- a write operation occurred after this was cached."
             cached["_stale"] = True
             cached["_generation"] = staleness["generation"]
         return cached
@@ -1733,7 +1733,7 @@ def prove_overflow(
     in milliseconds.
 
     Returns proven_exploitable (with witness values that trigger the overflow),
-    proven_defended (UNSAT — gates prevent overflow for ALL inputs),
+    proven_defended (UNSAT -- gates prevent overflow for ALL inputs),
     or inconclusive (solver timeout).
 
     Args:
@@ -1935,7 +1935,7 @@ def find_paths(
 
 
 # ======================================================================
-# TOOLS — write operations (queued to worker, serialized)
+# TOOLS -- write operations (queued to worker, serialized)
 # ======================================================================
 
 
@@ -1953,7 +1953,7 @@ def _mutate(binary_id: str, mutation_type: str, agent_id: str = "", **params: An
 def rename_function(binary_id: str, address: str, new_name: str, agent_id: str = "") -> dict:
     """Rename a function.
 
-    Queued — invalidates the decompile cache for this function and
+    Queued -- invalidates the decompile cache for this function and
     all of its callers.
 
     Args:
@@ -1974,7 +1974,7 @@ def rename_variable(
 ) -> dict:
     """Rename a local variable.
 
-    Queued — invalidates the decompile cache for the function.
+    Queued -- invalidates the decompile cache for the function.
 
     Args:
         binary_id: Opaque handle from open_binary.
@@ -1996,7 +1996,7 @@ def rename_variable(
 def set_comment(binary_id: str, address: str, comment: str, agent_id: str = "") -> dict:
     """Set a comment at an address.
 
-    Queued — invalidates the decompile cache for the containing function.
+    Queued -- invalidates the decompile cache for the containing function.
 
     Args:
         binary_id: Opaque handle from open_binary.
@@ -2016,7 +2016,7 @@ def set_function_type(
 ) -> dict:
     """Set a function's prototype/type.
 
-    Queued — invalidates the decompile cache.
+    Queued -- invalidates the decompile cache.
 
     Args:
         binary_id: Opaque handle from open_binary.
@@ -2039,7 +2039,7 @@ def set_variable_type(
 ) -> dict:
     """Set a local variable's type.
 
-    Queued — invalidates the decompile cache.
+    Queued -- invalidates the decompile cache.
 
     Args:
         binary_id: Opaque handle from open_binary.
@@ -2061,7 +2061,7 @@ def set_variable_type(
 def patch_bytes(binary_id: str, address: str, hex_bytes: str, agent_id: str = "") -> dict:
     """Patch bytes at an address.
 
-    Queued — invalidates the decompile cache for the containing function.
+    Queued -- invalidates the decompile cache for the containing function.
 
     Args:
         binary_id: Opaque handle from open_binary.
@@ -2119,7 +2119,7 @@ def get_generation(binary_id: str) -> dict:
 
 
 # -----------------------------------------------------------------------
-# TOOLS — miasm (server-side, instant, no worker needed)
+# TOOLS -- miasm (server-side, instant, no worker needed)
 # -----------------------------------------------------------------------
 
 
@@ -2132,7 +2132,7 @@ def miasm_disassemble(
     """Disassemble bytes using miasm's multi-arch engine.
 
     Independent of Hex-Rays. Supports x86_32, x86_64, ARM, AArch64.
-    Runs server-side — no worker needed, instant result.
+    Runs server-side -- no worker needed, instant result.
 
     Args:
         binary_id: Opaque handle from open_binary.
@@ -2237,7 +2237,7 @@ def miasm_emulate(
 
 
 # -----------------------------------------------------------------------
-# TOOLS — CFF analysis (server-side, instant, no worker needed)
+# TOOLS -- CFF analysis (server-side, instant, no worker needed)
 # -----------------------------------------------------------------------
 
 
@@ -2678,7 +2678,7 @@ def verify_capabilities(
 
     Enumerates all APIs the binary actually uses (imports, thunks, hash
     table), then classifies using ``data/api_categories.json``. The
-    database is editable — add new APIs/categories without code changes.
+    database is editable -- add new APIs/categories without code changes.
 
     Args:
         binary_id: Opaque handle from open_binary.
@@ -2702,7 +2702,7 @@ def verify_capabilities(
 # pe_reader.PEReader. No IDA round-trip, no cache poll, no pending
 # status. They give the agent the "enumerate strings" and "read memory"
 # surface that was missing from the existing catalog -- without those
-# the agent cannot find URL constants like the XRed C2 URLs unless
+# the agent cannot find URL constants like branded-RAT C2 URLs unless
 # classify_strings happens to pick them up (which it routinely does not).
 # ======================================================================
 

@@ -239,7 +239,7 @@ class LifecycleManager:
             # The MCP server reads JSON-RPC from stdin. If a child inherits it,
             # idalib's init_library may read from it, stealing MCP messages or
             # corrupting the stream. This was the root cause of workers dying
-            # silently after open_database — proven by concurrent idalib working
+            # silently after open_database -- proven by concurrent idalib working
             # fine when spawned from a standalone Python process (stdin=terminal)
             # but crashing when spawned from the MCP server (stdin=JSON-RPC pipe).
             proc = subprocess.Popen(
@@ -253,7 +253,7 @@ class LifecycleManager:
                 cwd=src_dir,
                 env=env,
             )
-            # Register under lock — Popen already finished (non-blocking)
+            # Register under lock -- Popen already finished (non-blocking)
             with self._state_lock:
                 self._worker_procs[lc.sha256] = proc
                 self._worker_activity[lc.sha256] = time.monotonic()
@@ -526,7 +526,7 @@ def _pid_alive(pid: int) -> bool:
     """Check if a process is actually running.
 
     On Windows, uses GetExitCodeProcess to check for STILL_ACTIVE (259).
-    OpenProcess(SYNCHRONIZE) is unreliable — succeeds on dead processes.
+    OpenProcess(SYNCHRONIZE) is unreliable -- succeeds on dead processes.
     """
     if os.name == "nt":
         try:

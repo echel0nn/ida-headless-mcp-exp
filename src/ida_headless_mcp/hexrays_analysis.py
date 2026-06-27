@@ -711,7 +711,7 @@ def get_hexrays_warnings(cfunc: Any) -> dict[str, Any]:
                     'text': text,
                 })
     except (AttributeError, TypeError):
-        # IDA version may not expose get_warnings() — degrade gracefully
+        # IDA version may not expose get_warnings() -- degrade gracefully
         pass
     return {
         'entry_ea': f'0x{cfunc.entry_ea:x}',
@@ -793,7 +793,7 @@ def pseudocode_slice(
                     if i not in hit_indices:
                         hit_indices.append(i)
         except (AttributeError, TypeError):
-            pass  # IDA version may not expose eamap/get_line_item — degrade gracefully
+            pass  # IDA version may not expose eamap/get_line_item -- degrade gracefully
 
     # Deduplicate and limit
     hit_indices = sorted(set(hit_indices))[:max_slices]
@@ -1204,7 +1204,7 @@ def _trace_interprocedural_chain(
     param_match = re.match(r'^a(\d+)$', _normalize_expr(final_expr))
     if param_match:
         param_idx = int(param_match.group(1)) - 1  # a1 → index 0
-        # This argument came from a caller — recurse up
+        # This argument came from a caller -- recurse up
         upstream_chains: list[dict[str, Any]] = []
         for xref in idautils.XrefsTo(func_ea, 0):
             caller_func = ida_funcs.get_func(xref.frm)
@@ -1282,7 +1282,7 @@ def constrained_reachability(
         binary_path: Path to the PE/ELF binary file.
         function_ea: Function entry address (source).
         sink_ea: Target address to prove reachable.
-        value_ranges: Output from microcode_value_ranges — list of
+        value_ranges: Output from microcode_value_ranges -- list of
             {block, variable, constraint} dicts.
         timeout_seconds: Maximum seconds for symbolic execution.
         max_steps: Maximum exploration steps.
@@ -1524,17 +1524,17 @@ def assess_exploitability(
     is_ext = source_type in ("file_header_field", "external_read", "function_parameter")
 
     if not is_ext:
-        verdict, reason = "low_risk", f"Source is '{source_type}' - not attacker-controlled."
+        verdict, reason = "low_risk", f"Source is '{source_type}' - not externally-controlled."
     elif has_ovf:
         verdict, reason = "defended", "Overflow check detected before the sink."
     elif has_upper and not has_mul:
         verdict, reason = "defended", "Upper bound check caps the value."
     elif has_mul and not has_upper:
         verdict, reason = "likely_exploitable", (
-            "Unchecked multiplication on attacker-controlled value. Integer overflow.")
+            "Unchecked multiplication on externally-controlled value. Integer overflow.")
     elif is_ext and not gates:
         verdict, reason = "likely_exploitable", (
-            "Attacker-controlled value reaches the sink with no validation.")
+            "Externally-controlled value reaches the sink with no validation.")
     elif is_ext and has_upper:
         verdict, reason = "possibly_defended", "Bound exists but arithmetic may bypass."
     else:
@@ -1586,7 +1586,7 @@ def _trace_to_source(
             found = item
             break
     if found is None:
-        # Can't trace further — check if it's a compound expression
+        # Can't trace further -- check if it's a compound expression
         # with traceable sub-expressions (e.g., v10 * v21)
         return _trace_compound(expr, assignments, chain, arithmetic_ops, seen, max_depth)
 

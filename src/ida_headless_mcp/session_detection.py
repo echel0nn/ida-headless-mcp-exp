@@ -818,7 +818,7 @@ class DetectionMixin:
     def classify_strings(self, binary_id: str, limit: int = 200) -> dict[str, Any]:
         """Structurally classify string references by format.
 
-        Returns factual categorization — no suspicion scoring.
+        Returns factual categorization -- no suspicion scoring.
         The consumer decides what matters.
         """
         import re
@@ -874,7 +874,7 @@ class DetectionMixin:
     def detect_dynamic_resolution(self, binary_id: str, limit: int = 50) -> dict[str, Any]:
         """Find GetProcAddress/LoadLibrary calls and extract resolved API names.
 
-        Detects runtime API resolution — a key malware evasion technique where
+        Detects runtime API resolution -- a key malware evasion technique where
         imports are resolved dynamically to avoid static IAT detection.
         """
         index = self._indices[binary_id]
@@ -904,7 +904,7 @@ class DetectionMixin:
             except (RuntimeError, ValueError):
                 continue
 
-            # Query GetProcAddress calls — arg 1 is the API name
+            # Query GetProcAddress calls -- arg 1 is the API name
             gpa = query_ctree_calls(
                 cfunc, target_function='GetProcAddress',
                 argument_index=1, limit=limit,
@@ -922,7 +922,7 @@ class DetectionMixin:
                         ),
                     })
 
-            # Query LoadLibrary calls — arg 0 is the DLL name
+            # Query LoadLibrary calls -- arg 0 is the DLL name
             for ll_name in ['LoadLibrary', 'LoadLibraryEx', 'GetModuleHandle']:
                 ll = query_ctree_calls(
                     cfunc, target_function=ll_name,

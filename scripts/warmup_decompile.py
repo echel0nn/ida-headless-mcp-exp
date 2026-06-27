@@ -1,4 +1,4 @@
-"""Background decompile warmup — pre-populate cache for all user functions.
+"""Background decompile warmup -- pre-populate cache for all user functions.
 
 Spawned by the lifecycle manager after .i64 is ready. Opens the database,
 decompiles every non-library function, writes results to the cache dir.

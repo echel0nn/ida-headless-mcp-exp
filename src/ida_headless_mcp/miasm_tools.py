@@ -95,7 +95,7 @@ def _read_bytes_at_va(pe_path: Path, va: int, size: int) -> bytes | None:
     """Read bytes from a PE file at a given virtual address.
 
     Parses PE headers to map VA -> file offset, then reads raw bytes.
-    No external dependencies — pure struct parsing.
+    No external dependencies -- pure struct parsing.
     """
     data = pe_path.read_bytes()
     if len(data) < 0x40:
@@ -110,7 +110,7 @@ def _read_bytes_at_va(pe_path: Path, va: int, size: int) -> bytes | None:
     coff_offset = e_lfanew + 4
     num_sections = struct.unpack_from("<H", data, coff_offset + 2)[0]
     optional_hdr_size = struct.unpack_from("<H", data, coff_offset + 16)[0]
-    # Optional header — get ImageBase
+    # Optional header -- get ImageBase
     opt_offset = coff_offset + 20
     magic = struct.unpack_from("<H", data, opt_offset)[0]
     if magic == 0x20B:  # PE32+
@@ -326,7 +326,7 @@ def miasm_simplify_expression(expression_str: str) -> dict[str, Any]:
     }
 
     try:
-        expr = eval(processed, {"__builtins__": {}}, ns)  # noqa: S307 — sandboxed namespace
+        expr = eval(processed, {"__builtins__": {}}, ns)  # noqa: S307 -- sandboxed namespace
     except Exception as exc:
         return {"error": f"Cannot parse expression: {exc}", "original": expression_str}
 
@@ -417,7 +417,7 @@ def miasm_emulate_snippet(
     except Exception as exc:
         return {"error": f"Symbolic execution failed: {exc}"}
 
-    # Collect final state — only modified registers
+    # Collect final state -- only modified registers
     modified = {}
     for sym, val in sb.modified():
         modified[str(sym)] = str(val)

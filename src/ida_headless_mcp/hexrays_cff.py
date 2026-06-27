@@ -118,7 +118,7 @@ class _CffOptimizer(ida_hexrays.optblock_t):
             # Look for: sub REG, CONST followed by jz
             if insn.opcode == _M_SUB:
                 if insn.r.t == _MOP_N and insn.l.t == _MOP_R:
-                    # This is sub REG, CONST — the REG holds the state var
+                    # This is sub REG, CONST -- the REG holds the state var
                     # Trace backward to find where REG was loaded from
                     reg = insn.l.r
                     sv = self._trace_reg_source(dispatcher, mba, reg)

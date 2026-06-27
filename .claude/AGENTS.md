@@ -1,4 +1,4 @@
-# Agent Guidelines — ida-headless-mcp
+# Agent Guidelines -- ida-headless-mcp
 
 ## Who consumes this MCP server
 
@@ -8,7 +8,7 @@ LLM agents (Claude, GPT, Codex) call our 69 tools to analyze binaries. They don'
 
 ### 1. Tools are self-contained queries
 
-An agent should be able to call ONE tool and get a useful answer. Don't force multi-step workflows unless the data genuinely requires it (e.g., open_binary must precede decompile — that's real dependency, not artificial sequencing).
+An agent should be able to call ONE tool and get a useful answer. Don't force multi-step workflows unless the data genuinely requires it (e.g., open_binary must precede decompile -- that's real dependency, not artificial sequencing).
 
 ### 2. Pending is not failure
 
@@ -20,9 +20,9 @@ When a tool returns `{"status": "pending"}`, it means "ask me again in a few sec
 
 ### 3. Error semantics
 
-- `{"status": "ready", ...}` — tool completed, results inline
-- `{"status": "pending", ...}` — in progress, retry later
-- `{"error": "..."}` — tool failed permanently, don't retry
+- `{"status": "ready", ...}` -- tool completed, results inline
+- `{"status": "pending", ...}` -- in progress, retry later
+- `{"error": "..."}` -- tool failed permanently, don't retry
 - A tool that returns ready with empty results is CORRECT (binary has no crypto, function has no stack strings). Don't confuse "nothing found" with "broken."
 
 ### 4. Binary lifecycle
@@ -65,7 +65,7 @@ There's no need to explicitly start workers. The arbiter handles it.
 ### 6. What agents should NOT do
 
 - Don't call `worker_status` in a loop to monitor. Just call the tool again.
-- Don't open the same binary twice. `open_binary` is idempotent — second call returns existing binary_id.
+- Don't open the same binary twice. `open_binary` is idempotent -- second call returns existing binary_id.
 - Don't assume function names are stable across sessions. Use addresses (0x...) for reliability.
 - Don't pass malformed hex addresses. Always prefix with `0x`.
 

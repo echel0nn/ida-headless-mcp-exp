@@ -1,4 +1,4 @@
-"""End-to-end MCP client test — proves the server works over stdio JSON-RPC."""
+"""End-to-end MCP client test -- proves the server works over stdio JSON-RPC."""
 from __future__ import annotations
 
 import json
@@ -124,14 +124,14 @@ def main() -> int:
         print(f"  {len(tools)} tools")
         results["tools/list"] = f"OK ({len(tools)})"
 
-        # Open IrfanView (the heavy one — IDA analysis)
+        # Open IrfanView (the heavy one -- IDA analysis)
         print("[3] open_binary (IrfanView, expect ~30s)...")
         t0 = time.monotonic()
         data = client.tool("open_binary", {"path": BINARY}, timeout=300)
         elapsed = time.monotonic() - t0
         bid = data.get("binary_id")
         if bid:
-            print(f"  {elapsed:.1f}s — binary_id={bid}, functions={data.get('function_count')}")
+            print(f"  {elapsed:.1f}s -- binary_id={bid}, functions={data.get('function_count')}")
             results["open_binary"] = f"OK ({data.get('function_count')} fn, {elapsed:.0f}s)"
         else:
             print(f"  FAIL: {data}")
@@ -170,7 +170,7 @@ def main() -> int:
         print(f"  verdict: {data.get('verdict')}")
         results["entropy_analysis"] = f"OK ({data.get('verdict')})"
 
-        # search_pattern(null_deref) — THE KEY TEST
+        # search_pattern(null_deref) -- THE KEY TEST
         print("[9] search_pattern(null_deref)...")
         t1 = time.monotonic()
         data = client.tool("search_pattern", {
@@ -178,7 +178,7 @@ def main() -> int:
         }, timeout=120)
         elapsed = time.monotonic() - t1
         count = data.get("count", 0)
-        print(f"  {elapsed:.1f}s — {count} hits")
+        print(f"  {elapsed:.1f}s -- {count} hits")
         for m in data.get("matches", [])[:3]:
             print(f"    {m['name']}: {m['detail']}")
         results["null_deref"] = f"OK ({count} hits, {elapsed:.0f}s)"

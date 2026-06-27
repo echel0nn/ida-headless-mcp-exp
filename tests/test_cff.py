@@ -419,7 +419,7 @@ def test_state_threshold_zero_input():
 
 
 # ---------------------------------------------------------------------------
-# 7. PE imports — optional, skipped without a real Windows PE
+# 7. PE imports -- optional, skipped without a real Windows PE
 # ---------------------------------------------------------------------------
 
 

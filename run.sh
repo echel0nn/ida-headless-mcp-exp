@@ -4,7 +4,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Platform-appropriate default — override via env var
+# Platform-appropriate default -- override via env var
 if [[ "$(uname)" == "Darwin" ]]; then
     export IDA_HEADLESS_MCP_IDA_DIR="${IDA_HEADLESS_MCP_IDA_DIR:-/Applications/IDA Professional 9.3.app/Contents/MacOS}"
 elif [[ "$(uname)" == "Linux" ]]; then

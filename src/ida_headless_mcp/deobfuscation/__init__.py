@@ -1,4 +1,4 @@
-"""Deobfuscation engine — data-driven expression rewriting + concrete emulation.
+"""Deobfuscation engine -- data-driven expression rewriting + concrete emulation.
 
 All rewrite rules live in ``data/deobfuscation_rules.json``. The engine
 parses pattern strings into miasm expression trees, matches against IR

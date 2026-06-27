@@ -1,4 +1,4 @@
-"""Mutation queue — serialized write operations for multi-agent collaboration.
+"""Mutation queue -- serialized write operations for multi-agent collaboration.
 
 10 agents can read concurrently from cache. All writes go through a single
 serial queue processed by the binary_worker. After each write, affected

@@ -405,11 +405,11 @@ class AnalysisMixin:
         """Enrich a pattern hit with reachability and source analysis.
 
         Returns verification fields to merge into the match dict:
-        - reachable_from_entry: bool — can this function be reached from exports/entry points?
-        - argument_source: str — where does the dangerous input come from?
-        - external_input: bool — does data flow from an external source (file/network)?
-        - confidence: str — 'high', 'medium', or 'low' exploitability assessment
-        - confidence_reason: str — why this confidence level
+        - reachable_from_entry: bool -- can this function be reached from exports/entry points?
+        - argument_source: str -- where does the dangerous input come from?
+        - external_input: bool -- does data flow from an external source (file/network)?
+        - confidence: str -- 'high', 'medium', or 'low' exploitability assessment
+        - confidence_reason: str -- why this confidence level
         """
         import ida_entry
 
@@ -433,7 +433,7 @@ class AnalysisMixin:
                     "external_input": False,
                     "confidence": "low",
                     "confidence_reason": (
-                        "Function has no callers — possibly dead code"
+                        "Function has no callers -- possibly dead code"
                         " or only reachable via indirect call."
                     ),
                 }
@@ -515,7 +515,7 @@ class AnalysisMixin:
         else:
             confidence = "low"
             reason = (
-                "Cannot prove attacker-controlled data reaches the dangerous operation. "
+                "Cannot prove externally-controlled data reaches the dangerous operation. "
                 "Input may be validated before reaching this code."
             )
 
@@ -844,7 +844,7 @@ class AnalysisMixin:
         import time
 
         import angr
-        import claripy  # noqa: F401 — used for constraint inspection
+        import claripy  # noqa: F401 -- used for constraint inspection
 
         rec = self._require(binary_id)
         source_ea = int(source_address.strip(), 16) if isinstance(source_address, str) else source_address
@@ -1000,7 +1000,7 @@ class AnalysisMixin:
         1. Scan .rdata for vtable-shaped arrays (consecutive function pointers)
         2. For each vtable, find xrefs TO it (constructors that install it)
         3. Read vtable entries to get virtual method list
-        No mass decompilation — uses xrefs and ida_bytes only.
+        No mass decompilation -- uses xrefs and ida_bytes only.
         """
         import ida_bytes
         import ida_funcs

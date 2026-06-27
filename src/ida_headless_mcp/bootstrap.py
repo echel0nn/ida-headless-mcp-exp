@@ -71,7 +71,7 @@ def _install_local_ida_package(settings: Settings) -> None:
         importlib.invalidate_caches()
         return
 
-    # Source package (setup.py) path — used by IDA 9.0 on Windows/Linux
+    # Source package (setup.py) path -- used by IDA 9.0 on Windows/Linux
     with tempfile.TemporaryDirectory(prefix="ida-idalib-src-") as tmp:
         tmp_src = Path(tmp) / "python"
         shutil.copytree(source_dir, tmp_src)

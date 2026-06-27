@@ -2,7 +2,7 @@
 
 Scans what the binary actually uses (imports, thunks, hash table, decrypted
 strings), then classifies into capabilities using ``data/api_categories.json``.
-No hardcoded API lists — the database is editable.
+No hardcoded API lists -- the database is editable.
 """
 from __future__ import annotations
 

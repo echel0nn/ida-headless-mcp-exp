@@ -1,4 +1,4 @@
-"""Proof tools — targeted SMT queries that prove/disprove vulnerability conditions.
+"""Proof tools -- targeted SMT queries that prove/disprove vulnerability conditions.
 
 Uses binbit (via smt_prover) for millisecond-scale bitvector proofs.
 These tools turn heuristic verdicts from assess_exploitability into
@@ -343,7 +343,7 @@ def prove_predicate_opaque(
             "always_true": True,
             "always_false": False,
             "condition": condition_expr,
-            "reason": "Condition is ALWAYS TRUE — false branch is dead code.",
+            "reason": "Condition is ALWAYS TRUE -- false branch is dead code.",
             "time_ms": result_true["time_ms"] + result_false["time_ms"],
         }
     elif can_be_false and not can_be_true:
@@ -352,7 +352,7 @@ def prove_predicate_opaque(
             "always_true": False,
             "always_false": True,
             "condition": condition_expr,
-            "reason": "Condition is ALWAYS FALSE — true branch is dead code.",
+            "reason": "Condition is ALWAYS FALSE -- true branch is dead code.",
             "time_ms": result_true["time_ms"] + result_false["time_ms"],
         }
     else:
@@ -361,7 +361,7 @@ def prove_predicate_opaque(
             "always_true": False,
             "always_false": False,
             "condition": condition_expr,
-            "reason": "Genuine branch — both paths are feasible.",
+            "reason": "Genuine branch -- both paths are feasible.",
             "time_ms": result_true["time_ms"] + result_false["time_ms"],
         }
 
@@ -420,7 +420,7 @@ def prove_equivalence(
             "expr_a": expr_a,
             "expr_b": expr_b,
             "counterexample": result["model"],
-            "reason": "NOT equivalent — counterexample found.",
+            "reason": "NOT equivalent -- counterexample found.",
             "time_ms": result["time_ms"],
         }
     else:
@@ -550,7 +550,7 @@ def _condition_to_smt(condition: str, variables: list[str], width: int) -> str |
         v = m.group(1)
         return f"(not (= (bvor {v} (_ bv1 {width})) (_ bv0 {width})))"
 
-    # x * (x + 1) % 2 == 0 (always true — product of consecutive)
+    # x * (x + 1) % 2 == 0 (always true -- product of consecutive)
     m = re.match(r"(\w+)\s*\*\s*\(\s*\s*\+\s*1\s*\)\s*%\s*2\s*==\s*0", c)
     if m and m.group(1) in variables:
         v = m.group(1)
@@ -635,7 +635,7 @@ def prove_bounds_sufficient(
         timeout_ms: Solver timeout.
 
     Returns:
-        Dict with sufficient (bool) — True means gates prevent ALL bad inputs.
+        Dict with sufficient (bool) -- True means gates prevent ALL bad inputs.
     """
     if not assess_result.get("sink_found"):
         return {
@@ -649,7 +649,7 @@ def prove_bounds_sufficient(
         return {
             "sufficient": False,
             "verdict": "no_gates",
-            "reason": "No validation gates found — input is unchecked.",
+            "reason": "No validation gates found -- input is unchecked.",
             "proof_coverage": _empty_coverage(),
         }
 

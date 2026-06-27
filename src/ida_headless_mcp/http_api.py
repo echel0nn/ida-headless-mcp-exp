@@ -39,7 +39,7 @@ _TOOL_EXCEPTIONS: tuple[type[BaseException], ...] = (
 
 def _tool_index() -> dict[str, Any]:
     """Live view of every ``@mcp.tool()``-registered tool."""
-    return mcp._tool_manager._tools  # noqa: SLF001 — public surface of FastMCP
+    return mcp._tool_manager._tools  # noqa: SLF001 -- public surface of FastMCP
 
 
 def _make_handler(fn: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
@@ -75,7 +75,7 @@ async def _lifespan(_app: FastAPI):
 def create_app() -> FastAPI:
     """Build a FastAPI app with one POST route per MCP tool."""
     app = FastAPI(
-        title="IDA Headless MCP — HTTP API",
+        title="IDA Headless MCP -- HTTP API",
         description="HTTP transport mirroring the MCP stdio tool surface.",
         version="0.1.0",
         lifespan=_lifespan,
@@ -133,7 +133,7 @@ def create_app() -> FastAPI:
             methods=["POST"],
             name=name,
             summary=summary[:120],
-            response_model=None,  # tools return dict OR list — let JSON encode
+            response_model=None,  # tools return dict OR list -- let JSON encode
         )
 
     return app

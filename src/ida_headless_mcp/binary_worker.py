@@ -1,4 +1,4 @@
-"""Unified binary worker — owns one .i64, processes all requests.
+"""Unified binary worker -- owns one .i64, processes all requests.
 
 One worker per binary. Spawned by the lifecycle manager when the .i64
 is ready. Watches request_queue.jsonl for work, processes it, writes
@@ -35,13 +35,13 @@ def _atomic_write(path: Path, data: str) -> None:
     os.replace(tmp, path)
 
 
-# Global mutable phase — the heartbeat thread reads this to know what to write
+# Global mutable phase -- the heartbeat thread reads this to know what to write
 _current_phase: str = "starting"
 _current_request: str = ""
 
 
 def _write_heartbeat(sha_dir: Path, status: str, current_request: str = "") -> None:
-    """Write worker heartbeat — proves liveness to the server."""
+    """Write worker heartbeat -- proves liveness to the server."""
     hb = {
         "pid": __import__("os").getpid(),
         "timestamp": time.time(),
@@ -110,7 +110,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
         sys.exit(1)
     binary_path = candidates[0]
 
-    # Start background heartbeat thread — writes every 2s regardless of main thread
+    # Start background heartbeat thread -- writes every 2s regardless of main thread
     global _current_phase, _current_request
     _current_phase = "bootstrapping_idalib"
     stop_heartbeat = threading.Event()
@@ -166,7 +166,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
     _update_state(sha_dir, state="ACTIVE", function_count=func_count,
                   worker_pid=__import__("os").getpid())
     print(f"[worker] ready: {func_count} functions", file=sys.stderr, flush=True)
-    # Build index if not cached — protected against CFF crash
+    # Build index if not cached -- protected against CFF crash
     index_path = sha_dir / 'index.json'
     if not index_path.exists():
         _current_phase = 'building_index'
@@ -180,7 +180,7 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
             print(f'[worker] index saved', file=sys.stderr, flush=True)
         except (RuntimeError, OSError, MemoryError, SystemError) as exc:
             # idalib can crash on CFF-heavy binaries during function iteration.
-            # Continue without index — tools that need it will get 'no index' error.
+            # Continue without index -- tools that need it will get 'no index' error.
             print(f'[worker] index build FAILED (continuing without index): {exc}',
                   file=sys.stderr, flush=True)
             _update_state(sha_dir, state='READY', function_count=func_count,
@@ -211,10 +211,10 @@ def run_worker(sha256: str, cache_dir: Path, idle_timeout: int = 900) -> None:
         if orphan.exists():
             try:
                 if not original.exists():
-                    # No live queue — just rename back (atomic)
+                    # No live queue -- just rename back (atomic)
                     orphan.rename(original)
                 else:
-                    # Live queue exists — merge orphaned entries via tmp
+                    # Live queue exists -- merge orphaned entries via tmp
                     merged = orphan.read_text(encoding='utf-8')
                     existing = original.read_text(encoding='utf-8')
                     tmp = sha_dir / f'{queue_name}.merged.tmp'
@@ -267,7 +267,7 @@ def _consume_queue(queue_path: Path, handler, sha_dir: Path) -> bool:
         return False
     # Atomic consume: rename to .processing, then read.
     # If server appends between rename and read, the append creates a NEW file
-    # at the original path — no data loss.
+    # at the original path -- no data loss.
     processing = queue_path.with_suffix('.processing')
     try:
         queue_path.rename(processing)
@@ -292,7 +292,7 @@ def _consume_queue(queue_path: Path, handler, sha_dir: Path) -> bool:
             _current_request = ""
         except (RuntimeError, OSError, ValueError, TypeError, KeyError,
                 MemoryError, AttributeError, IndexError) as exc:
-            # Log and continue — one bad request must not kill the worker.
+            # Log and continue -- one bad request must not kill the worker.
             # SystemExit and KeyboardInterrupt propagate normally.
             _current_phase = 'idle'
             _current_request = ''
@@ -475,7 +475,7 @@ def _handle_tool(req, sha_dir, results_dir, current_gen):
         print(f'[binary_worker] _handle_tool error: {req_type}: {exc}', file=sys.stderr, flush=True)
         # Write error to the STANDARD cache file so the server finds it
         # and stops re-queuing. Previously wrote to _error.json which the
-        # server's get_result never checked — causing infinite re-queue loops.
+        # server's get_result never checked -- causing infinite re-queue loops.
         _atomic_write(cache_file, json.dumps({
             'status': 'error',
             'error': str(exc),
@@ -684,7 +684,7 @@ def main() -> int:
     parser.add_argument("--idle-timeout", type=int, default=900)
     args = parser.parse_args()
 
-    # Redirect stderr to log file FIRST — before anything can crash
+    # Redirect stderr to log file FIRST -- before anything can crash
     log_dir = Path(args.cache_dir) / args.sha256 / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "worker_stderr.log"

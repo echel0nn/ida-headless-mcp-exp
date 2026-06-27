@@ -1,4 +1,4 @@
-"""Multi-algorithm API hash engine — 107 algorithms from HashDB.
+"""Multi-algorithm API hash engine -- 107 algorithms from HashDB.
 
 Dynamically loads ALL hash algorithm implementations from
 ``data/hashdb_algorithms/`` (cloned from OALabs/hashdb). No hardcoded

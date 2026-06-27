@@ -1,4 +1,4 @@
-# Golden Rules — ida-headless-mcp
+# Golden Rules -- ida-headless-mcp
 
 32 non-negotiable rules for this codebase.
 Derived from: AILA GOLDEN_RULES.md, a VR exploit dev who hates false positives,
@@ -25,7 +25,7 @@ this apart on Twitter the moment we publish.
 
 3. **One source of truth per datum.** Function index is in `index.json`. Decompile cache is in `decompile/`. Results are in `results/`. No tool stores results in two places. No tool reads from a source it doesn't own.
 
-4. **Workers are cattle, not pets.** Any worker can die at any moment. The arbiter respawns them. No tool assumes a worker is alive. No state lives only in worker memory — everything is persisted to cache before the tool returns "ready."
+4. **Workers are cattle, not pets.** Any worker can die at any moment. The arbiter respawns them. No tool assumes a worker is alive. No state lives only in worker memory -- everything is persisted to cache before the tool returns "ready."
 
 5. **No blocking the MCP server thread.** The server is single-threaded (FastMCP). Any computation over 100ms goes to a worker. The arbiter runs in a daemon thread. Zero sleep() in the server hot path.
 
@@ -65,7 +65,7 @@ this apart on Twitter the moment we publish.
 
 19. **Every public function has a Google-style docstring.** 60 functions missing docstrings right now. Args, Returns, Raises. No exceptions.
 
-20. **No function with 7+ parameters.** 12 instances right now. Use dataclasses or typed dicts for parameter groups. `batch_decompile` has 16 params — that's not a function, it's a config file.
+20. **No function with 7+ parameters.** 12 instances right now. Use dataclasses or typed dicts for parameter groups. `batch_decompile` has 16 params -- that's not a function, it's a config file.
 
 21. **One file, one responsibility.** `session.py` is 3287 lines doing everything from decompile to YARA to CAPA to stack strings. Split it. 500 lines per file maximum for implementation files.
 
@@ -83,7 +83,7 @@ this apart on Twitter the moment we publish.
 
 26. **No leaked paths, hashes, or evidence in git history.** `.gitignore` blocks `*.exe`, `cache/`, `evidence/`, `malware_files/`. `filter-branch` applied before any public push. Check with `git log --all -p | grep -i "C:\\Users"`.
 
-27. **Error messages must be actionable.** "Failed" is not an error message. "open_database failed: .i64 not found at /path/to/workspace/target.exe.i64 — run open_binary first" is.
+27. **Error messages must be actionable.** "Failed" is not an error message. "open_database failed: .i64 not found at /path/to/workspace/target.exe.i64 -- run open_binary first" is.
 
 28. **No dependency on global state initialization order.** If tool A must be called before tool B, the error from B must say so. No silent empty results because the user called things in the wrong order.
 

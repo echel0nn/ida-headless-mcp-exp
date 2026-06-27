@@ -2,7 +2,7 @@
 
 Loads rules from ``data/deobfuscation_rules.json``, parses pattern strings
 into miasm expression trees, matches against target expressions binding
-variables, and applies replacement patterns. All rules are data — no
+variables, and applies replacement patterns. All rules are data -- no
 hardcoded simplifications in this file.
 
 Uses miasm's ``expr_simp`` as a post-pass and the project's binbit prover

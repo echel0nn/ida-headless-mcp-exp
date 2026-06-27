@@ -46,7 +46,7 @@ def requires(min_state: BinaryState | None):
         @functools.wraps(method)
         def wrapper(self, binary_id: str, *args: Any, **kwargs: Any) -> Any:
             if min_state is None:
-                # No IDA needed — just check the binary exists
+                # No IDA needed -- just check the binary exists
                 self._require(binary_id)
                 return method(self, binary_id, *args, **kwargs)
 

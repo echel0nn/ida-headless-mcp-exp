@@ -6,7 +6,7 @@ Evaluates miasm expression trees with concrete integer values. Used for:
 - String decryption argument extraction (emulate prologue to read register values)
 
 Port of D-810's MicroCodeInterpreter concept to miasm's expression model.
-Does NOT use z3 — uses direct integer arithmetic with bitmask truncation.
+Does NOT use z3 -- uses direct integer arithmetic with bitmask truncation.
 """
 from __future__ import annotations
 

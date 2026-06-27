@@ -33,7 +33,7 @@ __all__ = ["load_signatures", "match_signature"]
 #   state-variable shape = 0.20
 #   characteristic bonus = up to 0.20
 #
-# A bare dispatcher hit (0.30) is too weak to name a family — many
+# A bare dispatcher hit (0.30) is too weak to name a family -- many
 # protectors share dispatcher topology. Dispatcher + state-variable
 # shape (0.50) is the floor for naming. Anything below that returns
 # ``(None, 0.0)`` as an unknown variant.
@@ -137,7 +137,7 @@ def _detected_opaques(detection: Any) -> set[str]:
     """Extract detected opaque-predicate pattern names as a set of strings.
 
     Tolerates either ``list[str]`` (just names) or ``list[dict]`` where
-    each dict has a ``pattern`` or ``name`` key — the latter is the
+    each dict has a ``pattern`` or ``name`` key -- the latter is the
     shape the design notes use when carrying per-instance metadata.
     """
     raw = getattr(detection, "opaque_patterns", None)
@@ -185,7 +185,7 @@ def _coerce_name_iterable(raw: Any) -> set[str]:
             ``name``), or ``None``. Anything else is treated as empty.
 
     Returns:
-        Set of name strings. Non-string entries are skipped silently —
+        Set of name strings. Non-string entries are skipped silently --
         they are not the caller's contract violation, just mismatched
         shapes from upstream tools.
     """
@@ -263,7 +263,7 @@ def match_signature(
         * Opaque-predicate pattern overlap: ``+0.3`` if any detected
           opaque name appears in the signature's ``opaque_patterns``.
           Detections without any classified opaque predicates simply
-          forfeit this band — they are not penalized further.
+          forfeit this band -- they are not penalized further.
         * State-variable type overlap: ``+0.2`` if the detected state
           variable kind appears in the signature's ``state_var_types``.
         * Per-characteristic bonuses: ``+0.02`` for each
@@ -272,7 +272,7 @@ def match_signature(
 
     The result is the highest-scoring signature, ties broken by the
     order returned from ``load_signatures``. If no signature meets the
-    confidence threshold (currently ``0.5`` — a dispatcher hit alone is
+    confidence threshold (currently ``0.5`` -- a dispatcher hit alone is
     too weak to name a family), ``(None, 0.0)`` is returned. Detections
     that resemble nothing in the database must not silently latch onto
     the weakest scorer.

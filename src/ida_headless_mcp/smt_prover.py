@@ -1,4 +1,4 @@
-"""SMT prover interface — pipes QF_BV scripts to binbit.
+"""SMT prover interface -- pipes QF_BV scripts to binbit.
 
 The MCP server uses this to prove/disprove overflow conditions,
 expression equivalences, and predicate opacity. binbit is a
@@ -23,7 +23,7 @@ from typing import Any
 
 __all__ = ["solve_smtlib", "binbit_available"]
 
-# Resolve binbit binary path — platform-appropriate extension
+# Resolve binbit binary path -- platform-appropriate extension
 _BINBIT_NAME = "binbit.exe" if platform.system() == "Windows" else "binbit"
 _BINBIT_PATH: str | None = os.environ.get(
     "IDA_HEADLESS_MCP_BINBIT_PATH",

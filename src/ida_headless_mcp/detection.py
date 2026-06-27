@@ -1,4 +1,4 @@
-"""Detection tools — cheap signals that inform consumer decisions.
+"""Detection tools -- cheap signals that inform consumer decisions.
 
 These run on microcode and data sections without SMT solving.
 They detect obfuscation, crypto primitives, and structural patterns
@@ -39,7 +39,7 @@ def detect_obfuscation(
     techniques: list[str] = []
     details: dict[str, Any] = {}
 
-    # 1. MBA density — CTree expression depth if available, fallback to text
+    # 1. MBA density -- CTree expression depth if available, fallback to text
     if cfunc is not None:
         mba = _check_mba_ctree(cfunc)
     else:
@@ -49,7 +49,7 @@ def detect_obfuscation(
         techniques.append("mba_substitution")
         details["mba_expressions"] = mba.get("examples", [])[:3]
 
-    # 2. CFF — look for dispatcher in pseudocode structure
+    # 2. CFF -- look for dispatcher in pseudocode structure
     cff = _check_cff(pseudocode)
     details["cff_detected"] = cff["detected"]
     if cff["detected"]:

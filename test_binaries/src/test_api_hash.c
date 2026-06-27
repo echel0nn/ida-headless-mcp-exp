@@ -34,7 +34,7 @@ void *resolve_api(HMODULE mod, unsigned int target_hash) {
 
     for (int i = 0; i < 6; i++) {
         if (hashes[i] == target_hash) {
-            // Found — in real code this would return the API pointer
+            // Found -- in real code this would return the API pointer
             return (void*)(uintptr_t)hashes[i];
         }
     }

@@ -1,4 +1,4 @@
-"""Cache reader — the MCP server's only data source.
+"""Cache reader -- the MCP server's only data source.
 
 The MCP server NEVER imports idalib. It reads results from the shared
 cache directory. If a result isn't cached, it queues the request and

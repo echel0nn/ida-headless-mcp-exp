@@ -32,7 +32,7 @@ fixture_paths.txt
 .local-rule-fixtures/projects/
 
 
-# Classified / evidence samples — NEVER commit
+# Classified / evidence samples -- NEVER commit
 .local-smoke/
 .local-probe/
 *.exe

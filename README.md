@@ -23,7 +23,7 @@ This one doesn't do that. Every single tool either gives you the answer immediat
 
 Other binary analysis MCPs give you `decompile` and maybe `list_functions`. That's it. They're wrappers around one API call.
 
-This is a **cyber reasoning engine**. It doesn't just decompile — it proves overflows are exploitable, traces taint across function boundaries, deflattens control-flow-flattened malware, decrypts strings, resolves API hashes, verifies capabilities, and generates detection rules. And it does all of this without blocking your agent for a single millisecond.
+This is a **cyber reasoning engine**. It doesn't just decompile -- it proves overflows are exploitable, traces taint across function boundaries, deflattens control-flow-flattened malware, decrypts strings, resolves API hashes, verifies capabilities, and generates detection rules. And it does all of this without blocking your agent for a single millisecond.
 
 The fundamental architecture difference:
 
@@ -66,7 +66,7 @@ MCP config:
 
 You need IDA Pro 9.0 with idalib and a Hex-Rays decompiler license.
 
-For SSE/HTTP transport (recommended for AILA integration — survives client disconnects):
+For SSE/HTTP transport (recommended for AILA integration -- survives client disconnects):
 ```bash
 IDA_HEADLESS_MCP_TRANSPORT=sse python -m ida_headless_mcp.server
 # Listens on http://127.0.0.1:18820/sse
@@ -153,7 +153,7 @@ binary_worker.py (loads .i64, processes requests, writes results to cache)
   `-- recovery.py (class hierarchy, protocol, CFG)
 ```
 
-The server process has never seen idalib in its life. Workers do the heavy lifting. Kill anything, restart it, lose nothing — everything is cached to disk with atomic writes.
+The server process has never seen idalib in its life. Workers do the heavy lifting. Kill anything, restart it, lose nothing -- everything is cached to disk with atomic writes.
 
 ## All 81 Tools
 

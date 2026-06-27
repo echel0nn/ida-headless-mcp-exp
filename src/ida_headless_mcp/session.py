@@ -210,11 +210,11 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         Returns:
             Current lifecycle state. One of:
 
-            * ``REGISTERED`` — binary known, background analysis not yet started
-            * ``ANALYZING`` — idat64 -B running in background (wait)
-            * ``READY`` — .i64 exists, IDA can open in <1s
-            * ``ACTIVE`` — idalib has database loaded
-            * ``INDEXED`` — function index built, all tools available
+            * ``REGISTERED`` -- binary known, background analysis not yet started
+            * ``ANALYZING`` -- idat64 -B running in background (wait)
+            * ``READY`` -- .i64 exists, IDA can open in <1s
+            * ``ACTIVE`` -- idalib has database loaded
+            * ``INDEXED`` -- function index built, all tools available
         """
         lc = self._lifecycle.get(binary_id)
         if lc is None:
@@ -279,17 +279,17 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
             cached["status"] = "ready"
             return cached
 
-        # Not cached — queue for background decompilation
+        # Not cached -- queue for background decompilation
         self._queue_decompile(rec.sha256, address_or_name)
         return {
             "binary_id": binary_id,
             "address": address_or_name,
             "status": "pending",
-            "message": "Decompilation queued. Retry this call — result will appear in cache.",
+            "message": "Decompilation queued. Retry this call -- result will appear in cache.",
         }
 
     def _decompile_sync(self, binary_id: str, address_or_name: str, max_lines: int = 500) -> dict[str, Any]:
-        """Synchronous decompile — used internally by tools that run in-process (search_pattern etc)."""
+        """Synchronous decompile -- used internally by tools that run in-process (search_pattern etc)."""
         rec = self._require(binary_id)
         cache_file = self._cache_file(rec.sha256, address_or_name)
         if cache_file.exists():
@@ -644,7 +644,7 @@ class IDABinarySessionManager(ProofMixin, AnalysisMixin, DetectionMixin):
         """Walk caller/callee chains from a target function to a given depth.
 
         Returns the full call tree reaching (or reachable from) the target.
-        Uses the function index — no decompilation needed.
+        Uses the function index -- no decompilation needed.
         """
         index = self._indices[binary_id]
 

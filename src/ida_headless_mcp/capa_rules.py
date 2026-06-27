@@ -1,7 +1,7 @@
 """CAPA rule evaluation engine.
 
 Evaluates 678 behavioral rules (derived from Mandiant CAPA, Apache-2.0)
-against function index entries. No CAPA binary needed — pure evaluation
+against function index entries. No CAPA binary needed -- pure evaluation
 of API names and string references against precomputed rule conditions.
 
 Rules cover 106 ATT&CK techniques across 17 categories:

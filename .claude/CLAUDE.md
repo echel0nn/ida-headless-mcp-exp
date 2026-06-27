@@ -1,4 +1,4 @@
-# ida-headless-mcp — Claude Code Instructions
+# ida-headless-mcp -- Claude Code Instructions
 
 Non-blocking binary analysis MCP server for IDA Pro 9.0. 69 tools. Python 3.11+, idalib backend, filesystem cache IPC.
 
@@ -43,7 +43,7 @@ test_binaries/
 cache/                 # Per-binary analysis cache (gitignored)
 ```
 
-## Architecture — The One Rule
+## Architecture -- The One Rule
 
 **server.py NEVER imports idalib.** Not today, not in a hotfix, not for one thing.
 
@@ -106,7 +106,7 @@ Crypto signatures have `word_size` and `endian` fields. No implicit x86 assumpti
 **Server-side tool (no worker, instant):**
 1. Implement in `miasm_tools.py` or similar (reads raw PE bytes, no idalib)
 2. Add `@mcp.tool()` function in `server.py` that calls the implementation directly
-3. These run in the server process — keep them fast (<1s)
+3. These run in the server process -- keep them fast (<1s)
 
 ## Adding a New Detection Signature
 
@@ -116,20 +116,20 @@ Crypto signatures have `word_size` and `endian` fields. No implicit x86 assumpti
 
 ## Common Mistakes
 
-1. **Importing ida_* at module level** — Only import inside functions. Module-level imports crash the server (which never loads idalib).
-2. **Forgetting `_cache_key` in queue request** — The cache filename is derived from this key. Without it, results overwrite each other.
-3. **Testing only on tiny binaries** — A 100KB binary has 200 functions. certutil.exe has 3,678. ntoskrnl has 29,328. Performance cliffs appear at scale.
-4. **Assuming worker is alive** — Always go through `ensure_worker()`. Never hold a reference to a worker process.
-5. **Writing to cache without generation stamp** — Every result dict must include `"generation": current_gen`. Without it, staleness detection breaks.
-6. **Hardcoding IDA paths** — All paths come from `config.py` which reads env vars.
-7. **Returning raw IDA objects** — Everything returned from session methods must be JSON-serializable dicts/lists/primitives. No ida_* objects in return values.
-8. **Missing stdin=DEVNULL on subprocess** — All `subprocess.Popen` and `subprocess.run` calls MUST set `stdin=subprocess.DEVNULL`. Workers inherit the MCP server's stdin (JSON-RPC pipe). idalib reads from stdin during init. Without DEVNULL, workers steal MCP messages and crash silently.
+1. **Importing ida_* at module level** -- Only import inside functions. Module-level imports crash the server (which never loads idalib).
+2. **Forgetting `_cache_key` in queue request** -- The cache filename is derived from this key. Without it, results overwrite each other.
+3. **Testing only on tiny binaries** -- A 100KB binary has 200 functions. certutil.exe has 3,678. ntoskrnl has 29,328. Performance cliffs appear at scale.
+4. **Assuming worker is alive** -- Always go through `ensure_worker()`. Never hold a reference to a worker process.
+5. **Writing to cache without generation stamp** -- Every result dict must include `"generation": current_gen`. Without it, staleness detection breaks.
+6. **Hardcoding IDA paths** -- All paths come from `config.py` which reads env vars.
+7. **Returning raw IDA objects** -- Everything returned from session methods must be JSON-serializable dicts/lists/primitives. No ida_* objects in return values.
+8. **Missing stdin=DEVNULL on subprocess** -- All `subprocess.Popen` and `subprocess.run` calls MUST set `stdin=subprocess.DEVNULL`. Workers inherit the MCP server's stdin (JSON-RPC pipe). idalib reads from stdin during init. Without DEVNULL, workers steal MCP messages and crash silently.
 
 ## Verification Checklist
 
 Before yielding any change:
-- [ ] `python -m py_compile src/ida_headless_mcp/*.py` — no syntax errors
-- [ ] `python -m ruff check src/ --select E,F,W` — clean
+- [ ] `python -m py_compile src/ida_headless_mcp/*.py` -- no syntax errors
+- [ ] `python -m ruff check src/ --select E,F,W` -- clean
 - [ ] No new `except Exception: pass` introduced
 - [ ] No new hardcoded paths
 - [ ] No new functions with 7+ parameters

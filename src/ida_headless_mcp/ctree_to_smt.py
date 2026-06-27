@@ -93,7 +93,7 @@ def expr_to_smt(
         return f"(bvneg {inner})" if inner else None
 
     if op == ida_hexrays.cot_lnot:
-        # Logical not — returns bool, encode as bv == 0
+        # Logical not -- returns bool, encode as bv == 0
         inner = expr_to_smt(expr.x, ctx, _unsupported)
         if inner:
             inner_w = _expr_width(expr.x)
@@ -188,7 +188,7 @@ def expr_to_smt(
             return f"(ite {cond} {then_val} {else_val})"
         return None
 
-    # Memory dereference — treat as free variable (can't reason about memory)
+    # Memory dereference -- treat as free variable (can't reason about memory)
     if op in (ida_hexrays.cot_ptr, ida_hexrays.cot_memptr,
               ida_hexrays.cot_memref, ida_hexrays.cot_idx):
         name = f"mem_{expr.ea & 0xFFFF:04x}"
@@ -201,13 +201,13 @@ def expr_to_smt(
         ctx.declare(name, width)
         return name
 
-    # Function call — treat result as free variable
+    # Function call -- treat result as free variable
     if op == ida_hexrays.cot_call:
         name = f"call_{expr.ea & 0xFFFF:04x}"
         ctx.declare(name, width)
         return name
 
-    # Assignment — return the RHS
+    # Assignment -- return the RHS
     if op == ida_hexrays.cot_asg:
         return expr_to_smt(expr.y, ctx, _unsupported)
 

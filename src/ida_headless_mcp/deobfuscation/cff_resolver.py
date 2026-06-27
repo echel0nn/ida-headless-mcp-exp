@@ -98,7 +98,7 @@ def resolve_opaque_block(
             # For opaque predicates (always-true CMP equal), ZF=1, CMOVNZ does NOT fire
             pass  # dst keeps its current value
 
-        # MOV [RSP+offset], reg — state variable write
+        # MOV [RSP+offset], reg -- state variable write
         elif mn == 'MOV' and '[' in dst and 'RSP' in dst:
             # Check if writing a register (not immediate)
             src_reg = src.strip().upper()
@@ -110,7 +110,7 @@ def resolve_opaque_block(
             if imm is not None and imm > 0xFF:
                 state_writes.append(imm)
 
-        # IMUL reg, [mem], imm — for LCG opaque predicates
+        # IMUL reg, [mem], imm -- for LCG opaque predicates
         elif mn == 'IMUL':
             # Parse: IMUL RAX, [RSP+0x28], 0x55F27432
             imm = _get_immediate_from_operands(ops)
@@ -132,7 +132,7 @@ def resolve_opaque_block(
                 if b_val is None:
                     b_val = _get_immediate_from_operands(parts[1])
                 # For opaque predicates, CMP result is always equal (ZF=1)
-                # We don't change CMOV behavior — the always-true assumption
+                # We don't change CMOV behavior -- the always-true assumption
                 # is handled by CMOVZ firing and CMOVNZ not firing
 
     # Filter state writes: only large values (CFF state constants)

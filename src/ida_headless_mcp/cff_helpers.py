@@ -1,4 +1,4 @@
-"""Internal helpers for cff_analysis — PE parsing, BlockInfo, dispatcher chain, handler aggregation."""
+"""Internal helpers for cff_analysis -- PE parsing, BlockInfo, dispatcher chain, handler aggregation."""
 from __future__ import annotations
 
 import re
@@ -424,7 +424,7 @@ def _aggregate_handler(
         visited.add(a)
         b = addr_to_block[a]
         in_chain = a in disp_chain and a != start_addr
-        # Collect state writes — use valid_states membership if available,
+        # Collect state writes -- use valid_states membership if available,
         # fall back to threshold for backward compat
         for v in b.state_writes:
             if valid_states is not None:
